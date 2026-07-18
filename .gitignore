@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+backend/.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Xcode / iOS
+ios/build/
+ios/DerivedData/
+ios/Audiobook.xcodeproj/   # generated from project.yml via `xcodegen generate`
+*.xcuserstate
+xcuserdata/
+
+# Local data / secrets (server state lives in ~/Library/Application Support)
+api_token.txt
+*.sqlite3
+
+# API keys (never commit)
+*_key.txt
+minimax_key.txt

@@ -1,0 +1,702 @@
+import AVFoundation
+import Combine
+import SwiftUI
+
+@main
+struct AudiobookApp: App {
+    @StateObject private var settings = AppSettings()
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if settings.isConfigured {
+                    RootTabView()
+                } else {
+                    NavigationStack { SettingsView() }
+                }
+            }
+            .environmentObject(settings)
+            .preferredColorScheme(appColorScheme(settings.appearance))
+        }
+    }
+}
+
+/// Map the stored appearance setting to a SwiftUI color scheme (nil = system).
+func appColorScheme(_ s: String) -> ColorScheme? {
+    switch s {
+    case "light": return .light
+    case "dark":  return .dark
+    default:      return nil
+    }
+}
+
+/// Light/Dark toggle shown top-right on every page.
+struct ThemeToggleButton: View {
+    @EnvironmentObject var settings: AppSettings
+    var body: some View {
+        Button {
+            settings.appearance = (settings.appearance == "dark") ? "light" : "dark"
+        } label: {
+            Image(systemName: settings.appearance == "dark" ? "sun.max.fill" : "moon.fill")
+        }
+    }
+}
+
+/// Two tabs: the folder library, and the "Continue listening" shelf.
+struct RootTabView: View {
+    var body: some View {
+        TabView {
+            LibraryView()
+                .tabItem { Label("Library", systemImage: "books.vertical") }
+            StartedView()
+                .tabItem { Label("Listening", systemImage: "headphones") }
+        }
+    }
+}
+
+/// Edits live in local @State and are only committed to AppSettings when the
+/// user taps Connect (after a reachability/auth check). This avoids the trap
+/// where typing one token character flips `isConfigured` and navigates away
+/// mid-input, firing a request with an incomplete token.
+struct SettingsView: View {
+    @EnvironmentObject var settings: AppSettings
+    @Environment(\.dismiss) private var dismiss
+    @State private var baseURL = ""
+    @State private var token = ""
+    @State private var checking = false
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            Section("Server") {
+                TextField("http://192.168.178.172:8723", text: $baseURL)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                SecureField("API token", text: $token)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+            }
+            if let error { Text(error).foregroundStyle(.red).font(.footnote) }
+            Section {
+                Button {
+                    Task { await connect() }
+                } label: {
+                    HStack {
+                        Text(checking ? "Connecting…" : "Connect")
+                        if checking { Spacer(); ProgressView() }
+                    }
+                }
+                .disabled(baseURL.isEmpty || token.isEmpty || checking)
+            } footer: {
+                Text("Same WiFi: use the Mac's LAN IP. From anywhere: the Tailscale name. The token is printed by the server on startup.")
+            }
+        }
+        .navigationTitle("Settings")
+        .onAppear { baseURL = settings.baseURL; token = settings.token }
+    }
+
+    private func connect() async {
+        checking = true; error = nil
+        defer { checking = false }
+        let url = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let probe = URL(string: url + "/api/library") else {
+            error = "Invalid server URL"; return
+        }
+        var req = URLRequest(url: probe, timeoutInterval: 8)
+        req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 { error = "Token rejected (401). Check the API token."; return }
+            if !(200...299).contains(code) { error = "Server error (\(code))."; return }
+            // Only now commit — this flips isConfigured and shows the library.
+            settings.baseURL = url
+            settings.token = tok
+            dismiss()
+        } catch {
+            self.error = "Can't reach the server. Check the URL and that the Mac is on."
+        }
+    }
+}
+
+/// Root: a folder browser starting at the library root.
+struct LibraryView: View {
+    @EnvironmentObject var settings: AppSettings
+    var body: some View {
+        NavigationStack { FolderView(folder: "", title: "Library") }
+    }
+}
+
+/// One folder level: its subfolders (with recursive book counts) and the books
+/// directly inside it. The search field queries ALL books globally, regardless
+/// of the current folder.
+struct FolderView: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    let folder: String
+    let title: String
+
+    @State private var subfolders: [LibraryFolder] = []
+    @State private var books: [Book] = []
+    @State private var query = ""
+    @State private var error: String?
+    @State private var loading = false
+
+    private var api: APIClient { APIClient(settings: settings) }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        List {
+            if !searching, !subfolders.isEmpty {
+                Section("Folders") {
+                    ForEach(subfolders) { f in
+                        NavigationLink(value: f) {
+                            Label {
+                                HStack {
+                                    Text(f.name)
+                                    Spacer()
+                                    Text("\(f.count)").foregroundStyle(.secondary)
+                                }
+                            } icon: { Image(systemName: "folder.fill").foregroundStyle(.tint) }
+                        }
+                    }
+                }
+            }
+            if !books.isEmpty {
+                Section(searching ? "Results" : "Books") {
+                    ForEach(books) { book in
+                        NavigationLink(value: book) {
+                            BookRow(book: book, showFolder: searching)
+                        }
+                    }
+                }
+            }
+            if !loading, subfolders.isEmpty, books.isEmpty {
+                Text(searching ? "No matches" : "Empty folder")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle(title)
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search all books")
+        .navigationDestination(for: LibraryFolder.self) { f in
+            FolderView(folder: f.path, title: f.name).environmentObject(settings)
+        }
+        .navigationDestination(for: Book.self) { book in
+            PlayerView(book: book).environmentObject(settings)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
+            if folder.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
+                }
+            }
+        }
+        .refreshable { await load() }
+        .task(id: query) { await load() }
+        .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty {                       // debounce search-as-you-type
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+        }
+        do {
+            let voiceID = UserDefaults.standard.integer(forKey: "voiceID")
+            let r = try await api.browse(folder: folder, q: q.isEmpty ? nil : q,
+                                         voiceID: voiceID == 0 ? nil : voiceID)
+            subfolders = r.subfolders
+            books = r.books
+            if UserDefaults.standard.object(forKey: "voiceID") == nil,
+               let first = r.voices.first {
+                UserDefaults.standard.set(first.id, forKey: "voiceID")
+            }
+            error = nil
+        } catch { self.error = "Load failed: \(error)" }
+    }
+}
+
+/// Shared row used by the library and the "Listening" shelf: cover, title,
+/// status, offline badge, and a progress bar once the book is started.
+struct BookRow: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    let book: Book
+    var showFolder = false
+
+    private var api: APIClient { APIClient(settings: settings) }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                      token: settings.token) { Color.gray.opacity(0.2) }
+                .scaledToFill()
+                .frame(width: 44, height: 60).clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(book.title).font(.headline).lineLimit(2)
+                Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                statusBadge
+                if let f = book.fractionComplete {
+                    ProgressView(value: f).scaleEffect(x: 1, y: 0.6, anchor: .leading)
+                }
+            }
+            Spacer()
+            if downloads.isDownloaded(book.bookId) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green)
+            }
+        }
+    }
+
+    @ViewBuilder private var statusBadge: some View {
+        let (label, color): (String, Color) = {
+            switch book.cacheStatus {
+            case "ready":   return ("Ready", .green)
+            case "partial": return ("Streaming…", .orange)
+            case "cleaned": return ("Prepared", .blue)
+            default:        return ("Not converted", .secondary)
+            }
+        }()
+        HStack(spacing: 6) {
+            Text(label).font(.caption2).foregroundStyle(color)
+            if book.positionS > 1 { Text("• resume").font(.caption2).foregroundStyle(.secondary) }
+            if showFolder, !book.folder.isEmpty {
+                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+}
+
+/// "Continue listening": books with a saved position, newest first.
+struct StartedView: View {
+    @EnvironmentObject var settings: AppSettings
+    @State private var books: [Book] = []
+    @State private var error: String?
+    @State private var bookToDelete: Book?
+
+    private var api: APIClient { APIClient(settings: settings) }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if books.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "headphones").font(.largeTitle).foregroundStyle(.secondary)
+                        Text("Nothing started yet").font(.headline)
+                        Text("Books you begin will appear here.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                } else {
+                    List(books) { book in
+                        if book.isUnavailable {
+                            // Ghost entry: PDF not found on server — show greyed out
+                            BookRow(book: book)
+                                .opacity(0.45)
+                                .overlay(alignment: .bottomLeading) {
+                                    Text("PDF nicht gefunden")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .padding(.leading, 4)
+                                }
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        bookToDelete = book
+                                    } label: { Label("Entfernen", systemImage: "trash") }
+                                }
+                        } else {
+                            NavigationLink(value: book) { BookRow(book: book) }
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        bookToDelete = book
+                                    } label: { Label("Entfernen", systemImage: "trash") }
+                                }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Listening")
+            .navigationDestination(for: Book.self) { book in
+                PlayerView(book: book).environmentObject(settings)
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
+                }
+            }
+            .refreshable { await load() }
+            .onAppear { Task { await load() } }
+            .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
+            .confirmationDialog(
+                "\"\(bookToDelete?.title ?? "")\" wirklich aus der Liste entfernen?",
+                isPresented: Binding(get: { bookToDelete != nil },
+                                     set: { if !$0 { bookToDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Entfernen", role: .destructive) {
+                    if let b = bookToDelete { Task { await remove(b) } }
+                }
+                Button("Abbrechen", role: .cancel) {}
+            }
+        }
+    }
+
+    private func load() async {
+        do {
+            let v = UserDefaults.standard.integer(forKey: "voiceID")
+            var serverBooks = try await api.started(voiceID: v == 0 ? nil : v)
+            error = nil
+            // Resync any locally stored progress that the server doesn't know about.
+            // This recovers from a server-side SQLite reset or accidental delete.
+            let serverIDs = Set(serverBooks.map { $0.bookId })
+            let local = LocalProgressStore.shared.load()
+            var resynced = false
+            for (bookID, entry) in local where !serverIDs.contains(bookID) {
+                guard entry.positionS > 1 else { continue }
+                try? await api.putProgress(bookID: bookID,
+                                           positionS: entry.positionS,
+                                           durationS: entry.durationS,
+                                           title: entry.title,
+                                           author: entry.author)
+                resynced = true
+            }
+            if resynced {
+                serverBooks = try await api.started(voiceID: v == 0 ? nil : v)
+            }
+            books = serverBooks
+        } catch { self.error = "Load failed: \(error)" }
+    }
+
+    /// Remove from "Listening": forget the server position, local backup, and
+    /// any offline download. Called only after the user confirms the dialog.
+    private func remove(_ book: Book) async {
+        books.removeAll { $0.id == book.id }
+        bookToDelete = nil
+        LocalProgressStore.shared.remove(book.bookId)
+        DownloadManager.shared.delete(book.bookId)
+        try? await api.deleteProgress(bookID: book.bookId)
+    }
+}
+
+struct PlayerView: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    @Environment(\.colorScheme) private var scheme
+    let book: Book
+    @StateObject private var vm: PlayerViewModelHolder = .init()
+    @State private var tab = 0   // 0 = chapters, 1 = running text
+    @State private var showRecap = false
+
+    private var api: APIClient { APIClient(settings: settings) }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Now-playing bar: cover thumbnail + title/author (compact, so the
+            // text/chapter area below stays large).
+            HStack(spacing: 12) {
+                AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                          token: settings.token) {
+                    RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.2))
+                }
+                .scaledToFill()
+                .frame(width: 58, height: 82).clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.primary.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(book.title).font(.headline).lineLimit(2)
+                    Text(book.author).font(.subheadline)
+                        .foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let m = vm.model {
+                ScrubberView(vm: m)
+                if m.offline {
+                    Label("Offline", systemImage: "arrow.down.circle.fill")
+                        .font(.caption2).foregroundStyle(.green)
+                } else if let st = m.status, st.state == "processing" {
+                    Text("Generating \(st.doneChunks)/\(st.totalChunks)…")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 40) {
+                Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) - 15) } label:
+                    { Image(systemName: "gobackward.15") }
+                Button { vm.model?.isPlaying == true ? vm.model?.pause() : vm.model?.play() } label:
+                    { Image(systemName: vm.model?.isPlaying == true ? "pause.circle.fill" : "play.circle.fill")
+                        .resizable().frame(width: 58, height: 58) }
+                Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) + 30) } label:
+                    { Image(systemName: "goforward.30") }
+            }.font(.title)
+
+            HStack(spacing: 28) {
+                sleepTimerControl
+                downloadControl
+            }
+
+            let hasText = !(vm.model?.transcript.isEmpty ?? true)
+            if hasText {
+                Picker("", selection: $tab) {
+                    Text("Chapters").tag(0)
+                    Text("Text").tag(1)
+                }.pickerStyle(.segmented)
+            }
+
+            if tab == 1 && hasText, let m = vm.model {
+                LyricsView(vm: m)
+            } else if let m = vm.model, !m.chapters.isEmpty {
+                chapterList(m)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .tint(tint)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    vm.model?.pause()
+                    showRecap = true
+                } label: { Image(systemName: "text.bubble") }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
+        }
+        .sheet(isPresented: $showRecap) {
+            RecapSheet(api: api, bookID: book.bookId,
+                       positionS: vm.model?.currentTime ?? 0)
+        }
+        .onAppear { vm.configure(api: api, book: book) }
+        .onDisappear { vm.model?.stop() }
+    }
+
+    /// Accent that keeps contrast in both themes: a deep blue on the light wash
+    /// (the system light-blue was too pale), the bright blue in dark mode.
+    private var tint: Color {
+        scheme == .dark ? .blue : Color(red: 0.04, green: 0.28, blue: 0.62)
+    }
+
+    @ViewBuilder private func chapterList(_ m: PlayerViewModel) -> some View {
+        let current = m.currentChapterIndex()
+        List(m.chapters) { ch in
+            let isCurrent = ch.index == current
+            Button { m.seek(toChapter: ch) } label: {
+                HStack {
+                    if isCurrent {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.caption).foregroundStyle(.tint)
+                    }
+                    Text(ch.title)
+                        .fontWeight(isCurrent ? .semibold : .regular)
+                        .foregroundStyle(ch.startS == nil ? .secondary
+                                         : (isCurrent ? tint : .primary))
+                    Spacer()
+                    if ch.startS == nil {
+                        Image(systemName: "hourglass").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .disabled(ch.startS == nil)
+            .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : nil)
+        }
+    }
+
+    /// Sleep timer: 30 / 45 / 60 minutes, with the remaining time shown and a
+    /// way to turn it off. Pauses playback when it elapses.
+    @ViewBuilder private var sleepTimerControl: some View {
+        let remaining = vm.model?.sleepRemaining
+        Menu {
+            Button("30 minutes") { vm.model?.startSleepTimer(minutes: 30) }
+            Button("45 minutes") { vm.model?.startSleepTimer(minutes: 45) }
+            Button("60 minutes") { vm.model?.startSleepTimer(minutes: 60) }
+            if remaining != nil {
+                Button("Turn off", role: .destructive) { vm.model?.cancelSleepTimer() }
+            }
+        } label: {
+            Label(
+                remaining.map { String(format: "Sleep in %d:%02d", $0 / 60, $0 % 60) } ?? "Sleep timer",
+                systemImage: remaining != nil ? "moon.zzz.fill" : "moon.zzz"
+            ).font(.footnote)
+                .foregroundStyle(remaining != nil ? tint : .secondary)
+        }
+    }
+
+    /// Offline-download affordance: download when the M4B is ready, show a
+    /// progress ring while downloading, or a delete option once stored.
+    @ViewBuilder private var downloadControl: some View {
+        if downloads.isDownloaded(book.bookId) {
+            Button(role: .destructive) { downloads.delete(book.bookId) } label: {
+                Label("Remove download", systemImage: "trash")
+            }.font(.footnote)
+        } else if let frac = downloads.progress[book.bookId] {
+            HStack {
+                ProgressView(value: frac).frame(width: 120)
+                Text("Downloading \(Int(frac * 100))%").font(.caption)
+            }
+        } else if vm.model?.status?.hasM4b == true {
+            Button { vm.model?.downloadForOffline() } label: {
+                Label("Download for offline", systemImage: "arrow.down.circle")
+            }.font(.footnote)
+        }
+    }
+}
+
+/// Playback position bar with elapsed / remaining time; drag to seek.
+struct ScrubberView: View {
+    @ObservedObject var vm: PlayerViewModel
+    @State private var scrubbing = false
+    @State private var value = 0.0
+
+    var body: some View {
+        let dur = max(vm.duration, 1)
+        VStack(spacing: 2) {
+            Slider(value: $value, in: 0...dur) { editing in
+                scrubbing = editing
+                if !editing { vm.seek(to: value) }
+            }
+            HStack {
+                Text(hms(value))
+                Spacer()
+                Text("-" + hms(max(dur - value, 0)))
+            }
+            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .onAppear { value = vm.currentTime }
+        .onChange(of: vm.currentTime) { t in if !scrubbing { value = t } }
+    }
+}
+
+/// Format seconds as m:ss or h:mm:ss.
+func hms(_ secs: Double) -> String {
+    let s = max(Int(secs.rounded()), 0)
+    let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+    return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec)
+                 : String(format: "%d:%02d", m, sec)
+}
+
+/// Spotify-style running text: highlights the sentence being spoken, auto-scrolls
+/// to it, and lets you tap any line to jump there.
+struct LyricsView: View {
+    @ObservedObject var vm: PlayerViewModel
+
+    var body: some View {
+        let currentID = vm.currentLineID()
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(vm.transcript) { line in
+                        let isCurrent = line.id == currentID
+                        Text(line.text)
+                            .font(isCurrent ? .title3 : .body)
+                            .fontWeight(isCurrent ? .semibold : .regular)
+                            .foregroundStyle(isCurrent ? Color.primary : .secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(line.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture { vm.seek(to: line.startS) }
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 80)
+            }
+            .onChange(of: vm.currentTime) { _ in
+                guard let id = vm.currentLineID() else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+    }
+}
+
+/// "Previously on…" sheet: requests a recap of everything heard so far, shows
+/// a spinner while it's generated, then displays the text and plays the audio
+/// (in the book's voice). The book is paused by the caller while this is open.
+struct RecapSheet: View {
+    let api: APIClient
+    let bookID: String
+    let positionS: Double
+    @Environment(\.dismiss) private var dismiss
+    @State private var status: RecapStatus?
+    @State private var failed: String?
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let st = status, st.state == "ready" {
+                    ScrollView { Text(st.text ?? "")
+                        .frame(maxWidth: .infinity, alignment: .leading).padding() }
+                } else if let f = failed ?? status?.error, status?.state == "failed" || failed != nil {
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.bubble").font(.largeTitle).foregroundStyle(.secondary)
+                        Text(f).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }.padding()
+                } else {
+                    VStack(spacing: 14) {
+                        ProgressView()
+                        Text("Summarizing what you've heard…").foregroundStyle(.secondary)
+                    }.padding(40)
+                }
+            }
+            .navigationTitle("Previously on…")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { player?.pause(); dismiss() }
+                }
+            }
+        }
+        .task { await run() }
+        .onDisappear { player?.pause(); player = nil }
+    }
+
+    private func run() async {
+        do {
+            let id = try await api.startRecap(bookID: bookID, positionS: positionS)
+            for _ in 0..<90 {                       // poll up to ~3 min
+                let st = try await api.recapStatus(id)
+                status = st
+                if st.state == "ready" {
+                    if let u = st.audioUrl { playAudio(u) }
+                    return
+                }
+                if st.state == "failed" { return }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            failed = "Timed out generating the recap."
+        } catch { failed = "Couldn't generate a recap." }
+    }
+
+    private func playAudio(_ path: String) {
+        guard let url = api.absURL(path) else { return }
+        let asset = AVURLAsset(url: url, options: [
+            "AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(api.settings.token)"]
+        ])
+        let p = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        player = p
+        p.play()
+    }
+}
+
+/// Bridges the @MainActor view model into a SwiftUI @StateObject lifecycle.
+@MainActor final class PlayerViewModelHolder: ObservableObject {
+    @Published var model: PlayerViewModel?
+    func configure(api: APIClient, book: Book) {
+        guard model == nil else { return }
+        let m = PlayerViewModel(api: api, book: book)
+        model = m
+        m.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        m.start()
+    }
+    private var cancellables = Set<AnyCancellable>()
+}

@@ -1,0 +1,38 @@
+name: Audiobook
+options:
+  bundleIdPrefix: com.henningjaeger
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: YOUR_DEVELOPMENT_TEAM
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"          # language mode 5: relaxed concurrency checking
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
+
+targets:
+  Audiobook:
+    type: application
+    platform: iOS
+    sources:
+      - path: AudiobookApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.henningjaeger.audiobook
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: AudiobookApp/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]      # keep playing with the screen locked
+        # The server is reached over Tailscale via plain HTTP, so allow it.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: "Connect to your audiobook server on your private network."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
