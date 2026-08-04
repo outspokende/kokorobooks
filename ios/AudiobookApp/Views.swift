@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 
 @main
-struct AudiobookApp: App {
+struct KokoroBooksApp: App {
     @StateObject private var settings = AppSettings()
     var body: some Scene {
         WindowGroup {
@@ -68,7 +68,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Server") {
-                TextField("http://192.168.178.172:8723", text: $baseURL)
+                TextField("http://192.168.178.172:8724", text: $baseURL)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
@@ -143,12 +143,20 @@ struct FolderView: View {
     @State private var query = ""
     @State private var error: String?
     @State private var loading = false
+    @State private var isOffline = false
+    @AppStorage("voiceID") private var voiceID = 0
 
     private var api: APIClient { APIClient(settings: settings) }
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         List {
+            if isOffline {
+                Section {
+                    Label("Offline — showing downloaded books", systemImage: "wifi.slash")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if !searching, !subfolders.isEmpty {
                 Section("Folders") {
                     ForEach(subfolders) { f in
@@ -165,7 +173,7 @@ struct FolderView: View {
                 }
             }
             if !books.isEmpty {
-                Section(searching ? "Results" : "Books") {
+                Section(searching ? "Results" : (isOffline ? "Downloaded" : "Books")) {
                     ForEach(books) { book in
                         NavigationLink(value: book) {
                             BookRow(book: book, showFolder: searching)
@@ -174,7 +182,7 @@ struct FolderView: View {
                 }
             }
             if !loading, subfolders.isEmpty, books.isEmpty {
-                Text(searching ? "No matches" : "Empty folder")
+                Text(searching ? "No matches" : (isOffline ? "No downloaded books" : "Empty folder"))
                     .foregroundStyle(.secondary)
             }
         }
@@ -190,14 +198,15 @@ struct FolderView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
             if folder.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) { VoiceMenu() }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
                 }
             }
         }
         .refreshable { await load() }
-        .task(id: query) { await load() }
-        .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
+        .task(id: "\(query)|\(voiceID)") { await load() }
+        .overlay { if let e = error, !isOffline { Text(e).foregroundStyle(.red).padding() } }
     }
 
     private func load() async {
@@ -209,7 +218,6 @@ struct FolderView: View {
             if Task.isCancelled { return }
         }
         do {
-            let voiceID = UserDefaults.standard.integer(forKey: "voiceID")
             let r = try await api.browse(folder: folder, q: q.isEmpty ? nil : q,
                                          voiceID: voiceID == 0 ? nil : voiceID)
             subfolders = r.subfolders
@@ -218,8 +226,69 @@ struct FolderView: View {
                let first = r.voices.first {
                 UserDefaults.standard.set(first.id, forKey: "voiceID")
             }
+            isOffline = false
             error = nil
-        } catch { self.error = "Load failed: \(error)" }
+        } catch {
+            // Offline fallback: show downloaded books from local manifest
+            let offline = downloads.offlineBooks()
+            if !offline.isEmpty && folder.isEmpty {
+                let filtered: [Book]
+                if q.isEmpty {
+                    filtered = offline
+                } else {
+                    let lq = q.lowercased()
+                    filtered = offline.filter {
+                        $0.title.lowercased().contains(lq) ||
+                        $0.author.lowercased().contains(lq)
+                    }
+                }
+                subfolders = []
+                books = filtered
+                isOffline = true
+                self.error = nil
+            } else {
+                isOffline = false
+                self.error = "Load failed: \(error)"
+            }
+        }
+    }
+}
+
+/// Selects one of the five Kokoro US male voices exposed by the server. Voice
+/// IDs are deliberately loaded from the API rather than assumed locally.
+struct VoiceMenu: View {
+    @EnvironmentObject private var settings: AppSettings
+    @AppStorage("voiceID") private var voiceID = 0
+    @State private var voices: [Voice] = []
+
+    private let supportedNames = ["Michael", "Adam", "Eric", "Liam", "Onyx"]
+    private var api: APIClient { APIClient(settings: settings) }
+    private var selectedName: String {
+        voices.first(where: { $0.id == voiceID })?.name ?? "Voice"
+    }
+
+    var body: some View {
+        Menu {
+            Picker("Kokoro voice", selection: $voiceID) {
+                ForEach(voices) { voice in
+                    Text(voice.name).tag(voice.id)
+                }
+            }
+        } label: {
+            Label(selectedName, systemImage: "waveform")
+        }
+        .accessibilityLabel("Kokoro voice: \(selectedName)")
+        .task { await loadVoices() }
+    }
+
+    private func loadVoices() async {
+        guard let response = try? await api.browse(voiceID: nil) else { return }
+        let byName = Dictionary(uniqueKeysWithValues: response.voices.map { ($0.name, $0) })
+        voices = supportedNames.compactMap { byName[$0] }
+        if voiceID == 0 || !voices.contains(where: { $0.id == voiceID }),
+           let preferred = voices.first(where: { $0.name == "Michael" }) ?? voices.first {
+            voiceID = preferred.id
+        }
     }
 }
 
@@ -277,9 +346,12 @@ struct BookRow: View {
 /// "Continue listening": books with a saved position, newest first.
 struct StartedView: View {
     @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    @AppStorage("voiceID") private var voiceID = 0
     @State private var books: [Book] = []
     @State private var error: String?
     @State private var bookToDelete: Book?
+    @State private var isOffline = false
 
     private var api: APIClient { APIClient(settings: settings) }
 
@@ -294,29 +366,37 @@ struct StartedView: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                 } else {
-                    List(books) { book in
-                        if book.isUnavailable {
-                            // Ghost entry: PDF not found on server — show greyed out
-                            BookRow(book: book)
-                                .opacity(0.45)
-                                .overlay(alignment: .bottomLeading) {
-                                    Text("PDF nicht gefunden")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                        .padding(.leading, 4)
-                                }
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        bookToDelete = book
-                                    } label: { Label("Entfernen", systemImage: "trash") }
-                                }
-                        } else {
-                            NavigationLink(value: book) { BookRow(book: book) }
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        bookToDelete = book
-                                    } label: { Label("Entfernen", systemImage: "trash") }
-                                }
+                    List {
+                        if isOffline {
+                            Section {
+                                Label("Offline — showing downloaded books", systemImage: "wifi.slash")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(books) { book in
+                            if book.isUnavailable {
+                                // Ghost entry: PDF not found on server — show greyed out
+                                BookRow(book: book)
+                                    .opacity(0.45)
+                                    .overlay(alignment: .bottomLeading) {
+                                        Text("PDF nicht gefunden")
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                            .padding(.leading, 4)
+                                    }
+                                    .swipeActions(edge: .trailing) {
+                                        Button(role: .destructive) {
+                                            bookToDelete = book
+                                        } label: { Label("Entfernen", systemImage: "trash") }
+                                    }
+                            } else {
+                                NavigationLink(value: book) { BookRow(book: book) }
+                                    .swipeActions(edge: .trailing) {
+                                        Button(role: .destructive) {
+                                            bookToDelete = book
+                                        } label: { Label("Entfernen", systemImage: "trash") }
+                                    }
+                            }
                         }
                     }
                 }
@@ -327,12 +407,13 @@ struct StartedView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
+                ToolbarItem(placement: .navigationBarTrailing) { VoiceMenu() }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
                 }
             }
             .refreshable { await load() }
-            .onAppear { Task { await load() } }
+            .task(id: voiceID) { await load() }
             .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
             .confirmationDialog(
                 "\"\(bookToDelete?.title ?? "")\" wirklich aus der Liste entfernen?",
@@ -371,7 +452,19 @@ struct StartedView: View {
                 serverBooks = try await api.started(voiceID: v == 0 ? nil : v)
             }
             books = serverBooks
-        } catch { self.error = "Load failed: \(error)" }
+            isOffline = false
+        } catch {
+            // Offline fallback: show downloaded books with resumed progress
+            let offline = downloads.offlineBooks()
+            if !offline.isEmpty {
+                books = offline
+                isOffline = true
+                error = nil
+            } else {
+                isOffline = false
+                self.error = "Load failed: \(error)"
+            }
+        }
     }
 
     /// Remove from "Listening": forget the server position, local backup, and

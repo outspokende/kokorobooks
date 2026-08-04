@@ -46,7 +46,7 @@ def write_id3(mp3_path: str | Path, *, title: str, artist: str = "",
                                  ID3NoHeaderError)
     except ImportError:
         import os
-        if os.environ.get("ABC_ALLOW_NO_ID3") == "1":  # test sandbox only
+        if os.environ.get("KBS_ALLOW_NO_ID3") == "1":  # test sandbox only
             return
         raise
     try:

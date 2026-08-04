@@ -55,6 +55,29 @@ final class DownloadManager: ObservableObject {
 
     var totalBytes: Int64 { downloaded.values.reduce(0) { $0 + $1.sizeBytes } }
 
+    /// Synthesize Book objects from the local manifest for offline display.
+    func offlineBooks() -> [Book] {
+        downloaded.values.compactMap { dl -> Book? in
+            guard FileManager.default.fileExists(atPath: fileURL(dl.bookID).path) else { return nil }
+            let local = LocalProgressStore.shared.load()[dl.bookID]
+            return Book(
+                bookId: dl.bookID,
+                filename: "",
+                relPath: "",
+                folder: "",
+                title: dl.title,
+                author: dl.author,
+                series: nil,
+                hasCover: false,
+                estDurationS: local?.durationS,
+                cacheStatus: "ready",
+                positionS: local?.positionS ?? 0,
+                updatedAt: local?.updatedAt,
+                pdfMissing: false
+            )
+        }.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
+    }
+
     // MARK: - Download
 
     func download(book: Book, jobID: Int, api: APIClient) {

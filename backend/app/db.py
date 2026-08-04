@@ -100,6 +100,14 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE jobs ADD COLUMN extraction_version INTEGER NOT NULL DEFAULT 1",
 ]
 
+BUILTIN_VOICES = (
+    (1, "Michael", "am_michael"),
+    (2, "Adam", "am_adam"),
+    (3, "Eric", "am_eric"),
+    (4, "Liam", "am_liam"),
+    (5, "Onyx", "am_onyx"),
+)
+
 
 class DB:
     def __init__(self, path: Optional[Path] = None):
@@ -117,6 +125,13 @@ class DB:
                     self._conn.execute(mig)
                 except sqlite3.OperationalError:
                     pass  # column already exists
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO voices"
+                "(id,name,ref_wav_path,ref_text,source_path,sample_rate,duration,created_at) "
+                "VALUES(?,?,?,'','builtin:kokoro',?,NULL,0)",
+                [(voice_id, name, key, config.SAMPLE_RATE)
+                 for voice_id, name, key in BUILTIN_VOICES],
+            )
 
     # --- generic ---------------------------------------------------------
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -155,7 +170,7 @@ class DB:
         return cur.lastrowid
 
     def voices(self) -> list[dict]:
-        return self.query("SELECT * FROM voices ORDER BY created_at DESC")
+        return self.query("SELECT * FROM voices ORDER BY id")
 
     def voice(self, voice_id: int) -> Optional[dict]:
         return self.query_one("SELECT * FROM voices WHERE id=?", (voice_id,))

@@ -7,24 +7,24 @@ in) so you create the project once in Xcode and drop these files in.
 The Xcode project is generated from `project.yml` (no `.xcodeproj` in git):
 ```bash
 cd ios
-xcodegen generate           # creates Audiobook.xcodeproj
-open Audiobook.xcodeproj     # or build from the CLI below
+xcodegen generate           # creates KokoroBooks.xcodeproj
+open KokoroBooks.xcodeproj   # or build from the CLI below
 ```
 CLI build + install to a connected iPhone:
 ```bash
 DEVID=$(xcrun xctrace list devices 2>&1 | grep -v Simulator | grep iPhone | head -1)
-xcodebuild -project Audiobook.xcodeproj -scheme Audiobook \
+xcodebuild -project KokoroBooks.xcodeproj -scheme KokoroBooks \
   -destination 'generic/platform=iOS' -allowProvisioningUpdates \
   -derivedDataPath build build
 xcrun devicectl device install app <device-udid> \
-  build/Build/Products/Debug-iphoneos/Audiobook.app
+  build/Build/Products/Debug-iphoneos/KokoroBooks.app
 ```
 Signing/Background-Audio/ATS are already configured in `project.yml`
-(team `YOUR_DEVELOPMENT_TEAM`, bundle id `com.henningjaeger.audiobook`).
+(team `YOUR_DEVELOPMENT_TEAM`, bundle id `com.henningjaeger.kokorobooks`).
 
 ## First launch
 Open **Settings** in the app and enter:
-- **Server URL**: `http://<your-mac>.<tailnet>.ts.net:8723` (MagicDNS name).
+- **Server URL**: `http://<your-mac>.<tailnet>.ts.net:8724` (MagicDNS name).
 - **API token**: printed by the server on startup
   (`tail -f ~/Library/Logs/audiobookserver.out.log`).
 

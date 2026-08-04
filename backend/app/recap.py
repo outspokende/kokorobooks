@@ -1,9 +1,9 @@
-""""Previously on…" recaps.
+"""“Previously on…” recaps.
 
 On demand, summarize everything heard so far (up to the current position, so no
-spoilers) into a ~45 s "previously on" narration and speak it in the book's
-cloned voice. Summary text comes from MiniMax (via the `mmx` CLI); the audio is
-produced by the same PocketTTS worker the books use, for a consistent voice.
+spoilers) into a short narration and speak it with the book's selected Kokoro
+voice. Summary text comes from MiniMax (via the `mmx` CLI); audio is produced by
+the same Kokoro worker used for the book.
 
 Runs asynchronously: POST starts a job, the client polls until the audio is
 ready. Results are cached per (book, chapter) so re-opening a recap is instant.
@@ -21,7 +21,7 @@ from typing import Optional
 from . import config
 from .db import DB
 from .pdfproc.chunking import split_into_chunks
-from .supervisor import ENGINE_KIND, WorkerHandle
+from .supervisor import WorkerHandle
 
 _RECAP_SYSTEM = (
     "You write a short spoken 'Previously on…' recap for someone resuming an "
@@ -194,7 +194,7 @@ class RecapManager:
             log_path = config.logs_dir() / f"recap_{rid}.log"
             with open(log_path, "a", buffering=1) as log_file:
                 audio = _synthesize(recap_text, voice, out_dir, log_file) \
-                    if voice and ENGINE_KIND == "pocket" else None
+                    if voice else None
             if audio:
                 self._set(rid, state="ready", audio=str(audio))
             else:

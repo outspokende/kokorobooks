@@ -156,7 +156,7 @@ def _write_mp4_tags(path: Path, job: dict) -> None:
     try:
         from mutagen.mp4 import MP4, MP4Cover
     except ImportError:
-        if os.environ.get("ABC_ALLOW_NO_ID3") == "1":  # test sandbox only
+        if os.environ.get("KBS_ALLOW_NO_ID3") == "1":  # test sandbox only
             return
         raise
     mp4 = MP4(str(path))

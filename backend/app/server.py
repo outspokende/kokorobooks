@@ -10,7 +10,6 @@ Differences from the desktop edition:
 from __future__ import annotations
 
 import shutil
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -46,17 +45,6 @@ class ProgressReq(BaseModel):
     author: Optional[str] = None
 
 
-class AddVoiceReq(BaseModel):
-    name: str
-    source_path: str
-    start_s: float = 0.0
-
-
-class UpdateVoiceReq(BaseModel):
-    name: Optional[str] = None
-    ref_text: Optional[str] = None
-
-
 _SEG_MEDIA = {
     ".m3u8": "application/vnd.apple.mpegurl",
     ".mp4": "audio/mp4",
@@ -65,10 +53,9 @@ _SEG_MEDIA = {
 
 
 def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
-    app = FastAPI(title="AudiobookServer", docs_url=None, redoc_url=None)
+    app = FastAPI(title="KokoroBooks", docs_url=None, redoc_url=None)
     token = config.get_or_create_token()
     recaps = RecapManager(db)
-    voice_create_status: dict = {}
 
     # ---- auth ------------------------------------------------------------
     @app.middleware("http")
@@ -321,48 +308,7 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
     # ---- voices ----------------------------------------------------------
     @app.get("/api/voices")
     def list_voices():
-        return {"voices": db.voices(),
-                "voice_create": voice_create_status or None}
-
-    @app.post("/api/voices")
-    def add_voice(req: AddVoiceReq):
-        if not Path(req.source_path).is_file():
-            raise HTTPException(400, "source file not found")
-        voice_create_status.clear()
-        voice_create_status.update({"state": "processing", "name": req.name})
-
-        def work():
-            from .voices import create_voice
-            try:
-                create_voice(db, req.name, req.source_path, req.start_s,
-                             voice_create_status)
-                voice_create_status.update({"state": "done"})
-            except Exception as exc:  # noqa: BLE001
-                voice_create_status.update({"state": "failed", "error": str(exc)})
-
-        threading.Thread(target=work, daemon=True).start()
-        return {"ok": True}
-
-    @app.patch("/api/voices/{voice_id}")
-    def update_voice(voice_id: int, req: UpdateVoiceReq):
-        fields = {k: v for k, v in req.model_dump().items() if v is not None}
-        db.update_voice(voice_id, **fields)
-        return {"ok": True}
-
-    @app.delete("/api/voices/{voice_id}")
-    def delete_voice(voice_id: int):
-        v = db.voice(voice_id)
-        if v:
-            Path(v["ref_wav_path"]).unlink(missing_ok=True)
-        db.delete_voice(voice_id)
-        return {"ok": True}
-
-    @app.get("/api/voices/{voice_id}/audio")
-    def voice_audio(voice_id: int):
-        v = db.voice(voice_id)
-        if not v or not Path(v["ref_wav_path"]).exists():
-            raise HTTPException(404)
-        return FileResponse(v["ref_wav_path"], media_type="audio/wav")
+        return {"voices": db.voices(), "voice_create": None}
 
     return app
 
@@ -442,7 +388,7 @@ def _transcript(db: DB, job_id: int) -> list[dict]:
     Mirrors the HLS/chapter timeline: only done chunks advance the clock (in
     order, gaps included). Each chunk's duration is apportioned across its
     sentences by character length — approximate but visually accurate enough
-    for an auto-scrolling running-text view. PocketTTS gives no word timings,
+    for an auto-scrolling running-text view. Kokoro gives no word timings,
     so finer than this would need forced alignment."""
     done = db.query(
         "SELECT * FROM chunks WHERE job_id=? AND status='done' ORDER BY idx",

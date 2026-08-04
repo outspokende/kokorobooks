@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kokorobooks</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE_WITH_YOUR_USERNAME/kokorobooks/backend/.venv/bin/python</string>
+    <string>-m</string>
+    <string>app.serve</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE_WITH_YOUR_USERNAME/kokorobooks/backend</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KBS_HOST</key>            <string>0.0.0.0</string>
+    <key>KBS_PORT</key>            <string>8724</string>
+    <key>KBS_LIBRARY_DIR</key>     <string>/Users/REPLACE_WITH_YOUR_USERNAME/Audiobooks/PDFs</string>
+    <key>KBS_AUDIO_CACHE_GB</key>  <string>20</string>
+    <key>KBS_SLEEP_START</key>     <string>23:55</string>
+    <key>KBS_SLEEP_END</key>       <string>04:00</string>
+    <key>KBS_ENGINE</key>          <string>kokoro</string>
+    <key>KBS_FFMPEG</key>          <string>/opt/homebrew/bin/ffmpeg</string>
+    <key>PATH</key>                <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_WITH_YOUR_USERNAME/Library/Logs/kokorobooks.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_WITH_YOUR_USERNAME/Library/Logs/kokorobooks.err.log</string>
+</dict>
+</plist>

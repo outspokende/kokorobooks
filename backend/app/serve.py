@@ -23,7 +23,7 @@ def main() -> None:
 
     token = config.get_or_create_token()
     print("=" * 60, flush=True)
-    print(f"  audiobookServer listening on "
+    print(f"  KokoroBooks listening on "
           f"{config.SERVER_HOST}:{config.SERVER_PORT}", flush=True)
     print(f"  library folder: {config.library_dir()}", flush=True)
     print(f"  API token:      {token}", flush=True)

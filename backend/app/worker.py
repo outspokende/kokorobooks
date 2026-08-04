@@ -53,7 +53,7 @@ def sanity_check(audio: np.ndarray, sr: int, text: str) -> str | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="pocket")
+    ap.add_argument("--engine", default="kokoro")
     ap.add_argument("--ref-audio", required=True)
     ap.add_argument("--ref-text-file", required=True)
     ap.add_argument("--language", default="auto")

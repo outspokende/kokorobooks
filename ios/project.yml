@@ -1,4 +1,4 @@
-name: Audiobook
+name: KokoroBooks
 options:
   bundleIdPrefix: com.henningjaeger
   deploymentTarget:
@@ -15,19 +15,22 @@ settings:
     TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
 
 targets:
-  Audiobook:
+  KokoroBooks:
     type: application
     platform: iOS
     sources:
       - path: AudiobookApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.henningjaeger.audiobook
+        PRODUCT_BUNDLE_IDENTIFIER: com.henningjaeger.kokorobooks
+        PRODUCT_NAME: KokoroBooks
+        INFOPLIST_KEY_CFBundleDisplayName: KokoroBooks
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: AudiobookApp/Info.plist
       properties:
+        CFBundleDisplayName: KokoroBooks
         UILaunchScreen: {}
         UIBackgroundModes: [audio]      # keep playing with the screen locked
         # The server is reached over Tailscale via plain HTTP, so allow it.

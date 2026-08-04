@@ -16,7 +16,7 @@ final class AppSettings: ObservableObject {
     let deviceID: String
 
     init() {
-        baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? ""
+        baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://192.168.178.172:8724"
         token = UserDefaults.standard.string(forKey: "token") ?? ""
         appearance = UserDefaults.standard.string(forKey: "appearance") ?? "dark"
         if let d = UserDefaults.standard.string(forKey: "deviceID") {

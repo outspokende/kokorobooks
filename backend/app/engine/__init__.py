@@ -1,4 +1,4 @@
-"""Engine interface. Implementations: pocket (production), fake (tests)."""
+"""Engine interface. Implementations: Kokoro/MLX (production), fake (tests)."""
 from __future__ import annotations
 
 from typing import Protocol, Tuple
@@ -18,9 +18,12 @@ class TTSEngine(Protocol):
 
 
 def create_engine(kind: str) -> "TTSEngine":
-    if kind == "pocket":
-        from .pocket import PocketEngine
-        return PocketEngine()
+    if kind == "kokoro":
+        from .kokoro import KokoroEngine
+        return KokoroEngine()
+    if kind == "kokoro-onnx":
+        from .kokoro_onnx import KokoroOnnxEngine
+        return KokoroOnnxEngine()
     if kind == "fake":
         from .fake import FakeEngine
         return FakeEngine()

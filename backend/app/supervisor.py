@@ -30,9 +30,7 @@ from typing import Optional
 from . import config
 from .db import DB
 from .hls import StreamAssembler
-from .models_download import ensure_model
-
-ENGINE_KIND = os.environ.get("ABC_ENGINE", "pocket")
+ENGINE_KIND = os.environ.get("KBS_ENGINE", "kokoro")
 
 
 def cache_key(pdf_hash: str, voice_id, fmt: str) -> str:
@@ -316,15 +314,6 @@ class Supervisor:
                 chapters_json=json.dumps(meta.get("chapter_titles") or []))
             log(f"chunk plan: {len(meta['chunks'])} chunks, "
                 f"{len(meta.get('chapter_titles') or [])} chapters")
-
-        if ENGINE_KIND == "pocket":
-            ok = ensure_model(config.POCKET_TTS_REPO, config.POCKET_TTS_SIZE_BYTES,
-                              self.download_status, self._shutdown)
-            self.download_status = {}
-            if not ok:
-                self.db.update_job(job_id, status="failed",
-                                   error="model download failed/cancelled")
-                return
 
         # Rebuild the HLS stream from scratch each run: feed every already-done
         # chunk (in order) into a fresh ffmpeg muxer, then continue live. AAC

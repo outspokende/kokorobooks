@@ -1,13 +1,10 @@
-# Python 3.11 / Apple Silicon. Headless server edition (no pywebview).
-pocket-tts>=2.0.0
-transformers>=5.5
-mlx-whisper>=0.4.1
+# Python 3.11 / Apple Silicon. Headless Kokoro/MLX server edition.
+mlx-audio>=0.2.9
+misaki[en]>=0.9.4
 pymupdf>=1.24.0
 mutagen>=1.47.0
 soundfile>=0.12.1
 numpy>=1.24.0,<3
-hf_xet>=1.1.0
-huggingface_hub>=0.32.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 pydantic>=2.0

@@ -1,7 +1,7 @@
-# audiobookServer
+# KokoroBooks
 
 Headless server + iOS app for on-demand audiobook streaming. A Mac (Apple
-Silicon) turns library PDFs into audiobooks with Pocket TTS voice cloning and
+Silicon) turns library PDFs into audiobooks with Kokoro 82M through MLX and
 streams them to an iPhone **while they are still being generated** — so playback
 starts within seconds instead of after a full conversion.
 
@@ -10,8 +10,13 @@ This is a separate project; the original desktop app
 (`pdfproc`, `audio`, `worker`, `supervisor`, `db`, engine) were copied and
 extended here.
 
+## Voices
+
+The iOS app offers five built-in American male presets: Michael, Adam, Eric,
+Liam, and Onyx. KokoroBooks does not clone or upload voices.
+
 ## Why streaming works so well here
-Pocket TTS generates ~10× realtime on an M2 Pro; playback is 1×. Once the first
+Kokoro generates much faster than realtime on Apple Silicon. Once the first
 HLS segment exists (~1–2 s of wall time), the generator stays far ahead of the
 listener with a **single worker** — no parallel pool needed.
 
@@ -49,8 +54,8 @@ mkdir -p ~/Audiobooks/PDFs        # drop your PDFs here
 python -m app.serve               # prints the API token on startup
 ```
 
-Key env vars: `ABS_HOST`, `ABS_PORT` (8723), `ABS_LIBRARY_DIR`,
-`ABS_AUDIO_CACHE_GB` (20), `ABS_SLEEP_START`/`ABS_SLEEP_END` (23:55/04:00).
+Key env vars: `KBS_HOST`, `KBS_PORT` (8724), `KBS_LIBRARY_DIR`,
+`KBS_AUDIO_CACHE_GB` (20), `KBS_SLEEP_START`/`KBS_SLEEP_END` (23:55/04:00).
 
 ### Tests
 ```bash
@@ -61,10 +66,10 @@ cd backend
 The HLS tests need `ffmpeg` on PATH (they skip if absent).
 
 ### Run as a service (launchd)
-Edit paths in `deploy/com.audiobookserver.plist`, then:
+Edit paths in `deploy/com.kokorobooks.plist`, then:
 ```bash
-cp deploy/com.audiobookserver.plist ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/com.audiobookserver.plist
+cp deploy/com.kokorobooks.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kokorobooks.plist
 ```
 
 The agent uses `RunAtLoad` + `KeepAlive`, so crashes are restarted

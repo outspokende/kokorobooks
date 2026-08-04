@@ -1,8 +1,9 @@
 """Central configuration and paths.
 
-All state lives in a single data directory so the app is self-contained:
-  macOS:  ~/Library/Application Support/audiobookServer
-  override with env ABC_DATA_DIR (used by tests).
+All state lives in a single data directory so KokoroBooks cannot collide with
+the original audiobookServer:
+  macOS:  ~/Library/Application Support/KokoroBooks
+  override with env KBS_DATA_DIR (used by tests).
 
 This is the headless *server* edition: no pywebview, a PDF library folder
 instead of file pickers, on-demand HLS streaming, and a small audio cache.
@@ -12,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # huggingface_hub 1.x retired hf_transfer in favor of the Xet backend. Clear
 # the deprecated flag and switch on Xet here at import time — config is imported
@@ -20,19 +22,16 @@ from pathlib import Path
 os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
 os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 
-APP_NAME = "audiobookServer"
+APP_NAME = "KokoroBooks"
 
-POCKET_TTS_REPO = "kyutai/pocket-tts"
-POCKET_TTS_SIZE_BYTES = 150_000_000  # ~150 MB
-WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
-WHISPER_SIZE_BYTES = 1_620_000_000
-
+KOKORO_TTS_REPO = os.environ.get(
+    "KBS_MODEL", "mlx-community/Kokoro-82M-bf16")
 SAMPLE_RATE = 24000
 
 # --- Robustness knobs (overridable via settings table / env) -----------------
-CHUNK_TIMEOUT_BASE_S = int(os.environ.get("ABC_CHUNK_TIMEOUT", "60"))
+CHUNK_TIMEOUT_BASE_S = int(os.environ.get("KBS_CHUNK_TIMEOUT", "60"))
 CHUNK_TIMEOUT_PER_CHAR_S = 0.2
-MODEL_LOAD_TIMEOUT_S = int(os.environ.get("ABC_LOAD_TIMEOUT", "300"))
+MODEL_LOAD_TIMEOUT_S = int(os.environ.get("KBS_LOAD_TIMEOUT", "300"))
 CHUNK_MAX_ATTEMPTS = 3
 WORKER_RECYCLE_EVERY_CHUNKS = 200
 # Audio sanity: seconds of audio per character of text must fall in this band
@@ -60,24 +59,24 @@ HLS_AAC_BITRATE = "64k"
 # Per (pdf_hash, voice_id, format) we keep the HLS segments + final M4B.
 # When the total exceeds the budget, least-recently-played finished books are
 # evicted. The currently generating/playing book is never evicted.
-AUDIO_CACHE_MAX_GB = float(os.environ.get("ABS_AUDIO_CACHE_GB", "20"))
+AUDIO_CACHE_MAX_GB = float(os.environ.get("KBS_AUDIO_CACHE_GB", "20"))
 
 # --- Server / remote access ---------------------------------------------------
 # Bind on all interfaces by default so Tailnet devices can reach it; the API is
 # still protected by a bearer token (see token_path) and should only be exposed
 # over Tailscale/WireGuard, never the open internet.
-SERVER_HOST = os.environ.get("ABS_HOST", "0.0.0.0")
-SERVER_PORT = int(os.environ.get("ABS_PORT", "8723"))
+SERVER_HOST = os.environ.get("KBS_HOST", "0.0.0.0")
+SERVER_PORT = int(os.environ.get("KBS_PORT", "8724"))
 
 # Nightly sleep window: outside this window the service keeps the Mac awake
 # (caffeinate) so it stays reachable; inside it the queue pauses and the Mac is
 # allowed to sleep. Times are local "HH:MM". Window may wrap past midnight.
-SLEEP_WINDOW_START = os.environ.get("ABS_SLEEP_START", "23:55")
-SLEEP_WINDOW_END = os.environ.get("ABS_SLEEP_END", "04:00")
+SLEEP_WINDOW_START = os.environ.get("KBS_SLEEP_START", "23:55")
+SLEEP_WINDOW_END = os.environ.get("KBS_SLEEP_END", "04:00")
 
 
 def data_dir() -> Path:
-    env = os.environ.get("ABC_DATA_DIR")
+    env = os.environ.get("KBS_DATA_DIR")
     if env:
         d = Path(env)
     elif sys.platform == "darwin":
@@ -112,7 +111,7 @@ def logs_dir() -> Path:
 
 def library_dir() -> Path:
     """Folder of source PDFs the iOS app browses. New books are dropped here."""
-    env = os.environ.get("ABS_LIBRARY_DIR")
+    env = os.environ.get("KBS_LIBRARY_DIR")
     d = Path(env) if env else (Path.home() / "Audiobooks" / "PDFs")
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -152,9 +151,9 @@ def minimax_key() -> Optional[str]:
 
 
 # --- Recap ("previously on") --------------------------------------------------
-MMX_BIN = os.environ.get("ABS_MMX", "/opt/homebrew/bin/mmx")
-MINIMAX_TEXT_MODEL = os.environ.get("ABS_MINIMAX_MODEL", "MiniMax-M2.7")
-RECAP_TARGET_WORDS = int(os.environ.get("ABS_RECAP_WORDS", "70"))  # <= ~30 s spoken
+MMX_BIN = os.environ.get("KBS_MMX", "/opt/homebrew/bin/mmx")
+MINIMAX_TEXT_MODEL = os.environ.get("KBS_MINIMAX_MODEL", "MiniMax-M2.7")
+RECAP_TARGET_WORDS = int(os.environ.get("KBS_RECAP_WORDS", "70"))  # <= ~30 s spoken
 
 
 def get_or_create_token() -> str:
@@ -211,4 +210,4 @@ def ffmpeg_path() -> str:
     for cand in (here.parent / "vendor" / "ffmpeg", here / "vendor" / "ffmpeg"):
         if cand.exists():
             return str(cand)
-    return os.environ.get("ABC_FFMPEG", "ffmpeg")
+    return os.environ.get("KBS_FFMPEG", "ffmpeg")

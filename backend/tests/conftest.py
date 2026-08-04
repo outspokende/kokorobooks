@@ -15,8 +15,8 @@ def env(tmp_path, monkeypatch):
     lib = tmp_path / "lib"
     data.mkdir()
     lib.mkdir()
-    monkeypatch.setenv("ABC_DATA_DIR", str(data))
-    monkeypatch.setenv("ABS_LIBRARY_DIR", str(lib))
+    monkeypatch.setenv("KBS_DATA_DIR", str(data))
+    monkeypatch.setenv("KBS_LIBRARY_DIR", str(lib))
     return {"data": data, "lib": lib}
 
 
