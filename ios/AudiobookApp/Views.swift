@@ -310,6 +310,7 @@ struct VoiceMenu: View {
 struct BookRow: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
+    @AppStorage("voiceID") private var voiceID = 0
     let book: Book
     var showFolder = false
 
@@ -332,31 +333,26 @@ struct BookRow: View {
                 // Inline download controls so the library row is self-contained
                 // and the user can trigger conversion without opening the player.
                 if downloads.isDownloaded(book.bookId) {
-                    Label("Downloaded", systemImage: "checkmark.circle.fill")
-                        .font(.caption2).foregroundStyle(.green)
-                } else if book.cacheStatus == "partial" {
-                    Label("Server generating… refresh in a minute", systemImage: "hourglass")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
-                    Button {
-                        Task {
-                            do {
-                                let resp = try await api.convert(
-                                    bookID: book.bookId,
-                                    voiceID: 0,
-                                    fmt: "m4b")
-                                // Server accepted — UI will pick up the new state
-                                // when the auto-poll loop in Library reloads.
-                                _ = resp
-                            } catch {
-                                // ignore — user can retry
-                            }
+                    HStack(spacing: 8) {
+                        Label("Gespeichert", systemImage: "checkmark.circle.fill")
+                            .font(.caption2).foregroundStyle(.green)
+                        Button(role: .destructive) {
+                            downloads.delete(book.bookId)
+                        } label: {
+                            Image(systemName: "trash")
                         }
+                        .font(.caption2)
+                    }
+                } else {
+                    Button {
+                        handleDownload()
                     } label: {
-                        Label("Prepare for offline", systemImage: "wand.and.stars")
+                        Label(book.cacheStatus == "partial" ? "Generiert..." : "Herunterladen",
+                              systemImage: book.cacheStatus == "partial" ? "hourglass" : "arrow.down.circle")
                     }
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle((book.cacheStatus == "partial" ? Color.secondary : Color.orange) as Color)
+                    .disabled(book.cacheStatus == "partial")
                 }
             }
             Spacer()
@@ -366,12 +362,35 @@ struct BookRow: View {
         }
     }
 
+    private func handleDownload() {
+        guard book.cacheStatus != "partial" else { return }
+        Task {
+            do {
+                let response = try await api.convert(
+                    bookID: book.bookId,
+                    voiceID: voiceID,
+                    fmt: "m4b")
+                if book.cacheStatus == "ready" {
+                    downloads.download(book: book, jobID: response.jobId, api: api)
+                    return
+                }
+                while !Task.isCancelled {
+                    let status = try await api.status(jobID: response.jobId)
+                    if status.hasM4b || status.state == "done" || status.state == "failed" { break }
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+            } catch {
+                // Silent retry: the button remains available if the request fails.
+            }
+        }
+    }
+
     @ViewBuilder private var statusBadge: some View {
         let (label, color): (String, Color) = {
             switch book.cacheStatus {
             case "ready":   return ("Ready", .green)
             case "partial": return ("Streaming…", .orange)
-            case "cleaned": return ("Prepared", .blue)
+            case "cleaned": return ("Not converted", .secondary)
             default:        return ("Not converted", .secondary)
             }
         }()
@@ -758,21 +777,19 @@ struct PlayerView: View {
     @ViewBuilder private var downloadControl: some View {
         if downloads.isDownloaded(book.bookId) {
             Button(role: .destructive) { downloads.delete(book.bookId) } label: {
-                Label("Remove download", systemImage: "trash")
+                Label("Entfernen", systemImage: "trash")
             }.font(.footnote)
         } else if let frac = downloads.progress[book.bookId] {
             HStack {
                 ProgressView(value: frac).frame(width: 120)
-                Text("Downloading \(Int(frac * 100))%").font(.caption)
+                Text("\(Int(frac * 100))%").font(.caption)
             }
         } else if vm.model?.status?.hasM4b == true {
             Button { vm.model?.downloadForOffline() } label: {
-                Label("Download for offline", systemImage: "arrow.down.circle")
+                Label("Herunterladen", systemImage: "arrow.down.circle")
             }.font(.footnote)
         } else if book.cacheStatus == "partial" {
-            // Server is actively generating the audio. The user can see this
-            // anywhere the BookRow appears (Library, Listening, Player).
-            Label("Server generating… refresh in a minute", systemImage: "hourglass")
+            Label("Generiert...", systemImage: "hourglass")
                 .font(.caption2).foregroundStyle(.secondary)
         } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
             Button {
@@ -788,7 +805,7 @@ struct PlayerView: View {
                     } catch { /* silent retry */ }
                 }
             } label: {
-                Label("Prepare for offline", systemImage: "wand.and.stars")
+                Label("Herunterladen", systemImage: "arrow.down.circle")
             }.font(.footnote)
             .foregroundStyle(.orange)
         }
