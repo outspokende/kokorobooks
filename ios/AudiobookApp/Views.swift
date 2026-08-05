@@ -730,24 +730,23 @@ struct PlayerView: View {
             Button { vm.model?.downloadForOffline() } label: {
                 Label("Download for offline", systemImage: "arrow.down.circle")
             }.font(.footnote)
+        } else if book.cacheStatus == "partial" {
+            // Server is actively generating the audio. The user can see this
+            // anywhere the BookRow appears (Library, Listening, Player).
+            Label("Server generating… refresh in a minute", systemImage: "hourglass")
+                .font(.caption2).foregroundStyle(.secondary)
         } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
-            // Show the conversion start button — tapping this starts server-side
-            // TTS generation. The user can track progress in real time.
             Button {
                 Task {
                     do {
                         let resp = try await api.convert(
                             bookID: book.bookId,
-                            voiceID: 1,  // TODO: use selected voice
+                            voiceID: 0,  // default voice
                             fmt: "m4b")
-                        // Poll job status until hasM4b is true or job fails
-                        for try await status in jobStatusStream(jobID: resp.jobId) {
-                            if status.hasM4b { break }
-                            if status.state == "failed" { break }
+                        for try await s in jobStatusStream(jobID: resp.jobId) {
+                            if s.hasM4b || s.state == "failed" { break }
                         }
-                    } catch {
-                        // Conversion failed silently — the user can retry
-                    }
+                    } catch { /* silent retry */ }
                 }
             } label: {
                 Label("Prepare for offline", systemImage: "wand.and.stars")
@@ -931,3 +930,4 @@ struct RecapSheet: View {
     }
     private var cancellables = Set<AnyCancellable>()
 }
+
