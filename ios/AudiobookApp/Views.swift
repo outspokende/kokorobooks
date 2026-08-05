@@ -178,8 +178,23 @@ struct FolderView: View {
             if !books.isEmpty {
                 Section(searching ? "Results" : (isOffline ? "Downloaded" : "Books")) {
                     ForEach(books) { book in
-                        NavigationLink(value: book) {
-                            BookRow(book: book, showFolder: searching)
+                        // Split the row into two clearly-separated tap targets:
+                        // - left side (cover/title/author) navigates to Player
+                        // - right side (download control) triggers conversion
+                        // A NavigationLink around the whole row used to swallow
+                        // taps on the inline button because SwiftUI routes the
+                        // row tap to the link.
+                        HStack(spacing: 0) {
+                            NavigationLink(value: book) {
+                                BookRowCompact(book: book, showFolder: searching)
+                                    .environmentObject(settings)
+                            }
+                            .buttonStyle(.plain)
+                            BookRowDownloadControl(
+                                book: book,
+                                api: api,
+                                downloads: DownloadManager.shared,
+                                voiceID: voiceID)
                         }
                     }
                 }
@@ -451,8 +466,19 @@ struct StartedView: View {
                                         } label: { Label("Entfernen", systemImage: "trash") }
                                     }
                             } else {
-                                NavigationLink(value: book) { BookRow(book: book) }
-                                    .swipeActions(edge: .trailing) {
+                                HStack(spacing: 0) {
+                                    NavigationLink(value: book) {
+                                        BookRowCompact(book: book)
+                                            .environmentObject(settings)
+                                    }
+                                    .buttonStyle(.plain)
+                                    BookRowDownloadControl(
+                                        book: book,
+                                        api: api,
+                                        downloads: DownloadManager.shared,
+                                        voiceID: voiceID)
+                                }
+                                .swipeActions(edge: .trailing) {
                                         Button(role: .destructive) {
                                             bookToDelete = book
                                         } label: { Label("Entfernen", systemImage: "trash") }
@@ -985,5 +1011,102 @@ struct RecapSheet: View {
         m.start()
     }
     private var cancellables = Set<AnyCancellable>()
+}
+
+/// Compact version of BookRow used inside NavigationLink (no interactive controls).
+struct BookRowCompact: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    let book: Book
+    var showFolder = false
+
+    private var api: APIClient { APIClient(settings: settings) }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                      token: settings.token) { Color.gray.opacity(0.2) }
+                .scaledToFill()
+                .frame(width: 44, height: 60).clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(book.title).font(.headline).lineLimit(2)
+                Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                Text(book.cacheStatus == "ready" ? "Ready"
+                     : book.cacheStatus == "partial" ? "Generiert..."
+                     : book.cacheStatus == "cleaned" ? "Prepared"
+                     : "Not converted")
+                    .font(.caption2)
+                    .foregroundStyle(book.cacheStatus == "partial" ? .orange
+                                     : book.cacheStatus == "ready"   ? .green
+                                     : .secondary)
+            }
+            Spacer()
+            if downloads.isDownloaded(book.bookId) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green)
+            }
+        }
+    }
+}
+
+/// Single-button download control used in the Library row.
+/// Sits next to a NavigationLink so taps are unambiguously routed:
+/// tapping the button starts conversion; tapping the row navigates to Player.
+struct BookRowDownloadControl: View {
+    let book: Book
+    let api: APIClient
+    @ObservedObject var downloads: DownloadManager
+    let voiceID: Int
+
+    var body: some View {
+        if downloads.isDownloaded(book.bookId) {
+            Button(role: .destructive) {
+                downloads.delete(book.bookId)
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.borderless)
+        } else if book.cacheStatus == "partial" {
+            // Server is busy — no action available, just visual confirmation.
+            Label("Wartet", systemImage: "hourglass")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 80)
+        } else {
+            Button {
+                Task {
+                    do {
+                        let resp = try await api.convert(
+                            bookID: book.bookId,
+                            voiceID: voiceID,
+                            fmt: "m4b")
+                        // Poll until job has m4b or ends in done/failed.
+                        var attempts = 0
+                        while attempts < 60 && !Task.isCancelled {
+                            let s = try await api.status(jobID: resp.jobId)
+                            if s.hasM4b || s.state == "done" || s.state == "failed" {
+                                break
+                            }
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            attempts += 1
+                        }
+                        // best-effort: trigger local download on completion
+                        if book.cacheStatus == "ready" {
+                            downloads.download(book: book, jobID: resp.jobId, api: api)
+                        }
+                    } catch {
+                        // ignore
+                    }
+                }
+            } label: {
+                Label("Herunterladen", systemImage: "arrow.down.circle")
+                    .font(.caption)
+                    .frame(width: 90)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+        }
+    }
 }
 
