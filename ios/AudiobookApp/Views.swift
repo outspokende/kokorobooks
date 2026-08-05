@@ -321,11 +321,10 @@ struct BookRow: View {
 
     private var api: APIClient { APIClient(settings: settings) }
     private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
-    private var isDownloading: Bool { downloads.progress[book.bookId] != nil }
 
     var body: some View {
         HStack(spacing: 12) {
-            // Left: cover + title → opens player
+            // Cover + title → opens player (HLS stream)
             NavigationLink(value: book) {
                 HStack(spacing: 12) {
                     AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
@@ -346,25 +345,28 @@ struct BookRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // Right: action icons
+            // Right: download state
             if isDownloaded {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else if isDownloading {
-                ProgressView(value: downloads.progress[book.bookId] ?? 0)
-                    .frame(width: 36, height: 36)
-            } else if waiting {
-                ProgressView()
-                    .frame(width: 24, height: 24)
+                Button(role: .destructive) {
+                    downloads.delete(book.bookId)
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.borderless)
+                .tint(.green)
             } else {
                 Button {
                     startDownload()
                 } label: {
-                    Image(systemName: "arrow.down.circle")
+                    Image(systemName: waiting
+                           ? "arrow.down.circle.dotted"
+                           : "arrow.down.circle")
                         .font(.title3)
                 }
                 .buttonStyle(.borderless)
                 .tint(.orange)
+                .disabled(waiting)
             }
         }
         .listRowSeparator(.hidden)
@@ -405,36 +407,22 @@ struct BookRow: View {
                 let resp = try await api.convert(
                     bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
                 let jobID = resp.jobId
-                // Stream the growing MP3 immediately — no waiting for hasM4b.
-                // Server writes MP3 chunks as they're generated, client receives
-                // them in real time. Connection closes naturally when job is done.
-                guard let url = api.absURL("/api/jobs/\(jobID)/mp3") else {
-                    throw APIError.badURL
+                // Poll until server finishes generating the M4B.
+                for _ in 0..<120 where !Task.isCancelled {
+                    let s = try await api.status(jobID: jobID)
+                    if s.hasM4b {
+                        downloads.download(book: book, jobID: jobID, api: api)
+                        waiting = false
+                        return
+                    }
+                    if s.state == "failed" {
+                        waiting = false
+                        lastError = "Server-Fehler"
+                        return
+                    }
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
                 }
-                var req = URLRequest(url: url)
-                req.setValue("Bearer \(settings.token)",
-                             forHTTPHeaderField: "Authorization")
-
-                // Use a dedicated URLSession with delegate for streaming.
-                let delegate = StreamingDownloadDelegate(
-                    bookID: book.bookId,
-                    onProgress: { done in
-                        Task { @MainActor in
-                            downloads.setProgress(done, for: book.bookId)
-                        }
-                    },
-                    onComplete: { tempURL in
-                        Task { @MainActor in
-                            downloads.importDownloadedMP3(
-                                bookID: book.bookId, from: tempURL)
-                            waiting = false
-                        }
-                    })
-                let session = URLSession(
-                    configuration: .default,
-                    delegate: delegate, delegateQueue: nil)
-                let task = session.downloadTask(with: req)
-                task.resume()
+                waiting = false
             } catch {
                 lastError = "Netzwerkfehler"
                 waiting = false
@@ -961,53 +949,4 @@ struct RecapSheet: View {
     }
     private var cancellables = Set<AnyCancellable>()
 }
-
-/// URLSessionDownloadDelegate for streaming MP3 downloads.
-/// Since the file grows while being generated, totalBytesExpectedToWrite
-/// may be -1 (unknown). The delegate reports received bytes and triggers
-/// onComplete when the connection closes (server finished generating).
-final class StreamingDownloadDelegate: NSObject, URLSessionDownloadDelegate {
-    let bookID: String
-    let onProgress: (Double) -> Void  // bytes received so far
-    let onComplete: (URL) -> Void
-
-    private var byteCount: Int64 = 0
-
-    init(bookID: String,
-         onProgress: @escaping (Double) -> Void,
-         onComplete: @escaping (URL) -> Void) {
-        self.bookID = bookID
-        self.onProgress = onProgress
-        self.onComplete = onComplete
-    }
-
-    func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        byteCount = totalBytesWritten
-        // Report a fractional progress (0..0.99) — the bar fills slowly
-        // but never reaches 100% until the connection closes.
-        onProgress(Double(totalBytesWritten) / max(Double(totalBytesWritten + 1), 1))
-    }
-
-    func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
-        onProgress(1.0)  // 100%
-        onComplete(location)
-    }
-
-    func urlSession(_ session: URLSession,
-                    task: URLSessionTask,
-                    didCompleteWithError error: Error?) {
-        if let error {
-            print("Streaming download error for \(bookID): \(error)")
-        }
-    }
-}
-
-
-
 
