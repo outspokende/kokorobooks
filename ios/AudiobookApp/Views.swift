@@ -178,24 +178,8 @@ struct FolderView: View {
             if !books.isEmpty {
                 Section(searching ? "Results" : (isOffline ? "Downloaded" : "Books")) {
                     ForEach(books) { book in
-                        // Split the row into two clearly-separated tap targets:
-                        // - left side (cover/title/author) navigates to Player
-                        // - right side (download control) triggers conversion
-                        // A NavigationLink around the whole row used to swallow
-                        // taps on the inline button because SwiftUI routes the
-                        // row tap to the link.
-                        HStack(spacing: 0) {
-                            NavigationLink(value: book) {
-                                BookRowCompact(book: book, showFolder: searching)
-                                    .environmentObject(settings)
-                            }
-                            .buttonStyle(.plain)
-                            BookRowDownloadControl(
-                                book: book,
-                                api: api,
-                                downloads: DownloadManager.shared,
-                                voiceID: voiceID)
-                        }
+                        BookRow(book: book, showFolder: searching)
+                            .environmentObject(settings)
                     }
                 }
             }
@@ -322,6 +306,12 @@ struct VoiceMenu: View {
 
 /// Shared row used by the library and the "Listening" shelf: cover, title,
 /// status, offline badge, and a progress bar once the book is started.
+/// One library row. Renders cover + title + status + a single self-contained
+/// download control. The row is split into two clearly-separated tap targets:
+/// the left half (cover/title) opens the player, the right half is the
+/// download/cancel button. No outer NavigationLink is required — the row
+/// wires up its own taps so the Library/Started/Downloaded views can stay
+/// agnostic.
 struct BookRow: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
@@ -329,9 +319,35 @@ struct BookRow: View {
     let book: Book
     var showFolder = false
 
+    /// Active job id (server-assigned) for this book, or nil if no job is in
+    /// flight. Set when the user taps "Download" and cleared when the row
+    /// is refreshed from the library or polling observes hasM4b.
+    @State private var activeJobID: Int?
+    /// Last network error message, shown briefly under the book title so the
+    /// user is never left wondering "did the click do anything?".
+    @State private var lastError: String?
+
     private var api: APIClient { APIClient(settings: settings) }
+    private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
+    private var inFlight: Bool { activeJobID != nil }
 
     var body: some View {
+        HStack(spacing: 12) {
+            // Left half: opens player.
+            NavigationLink(value: book) {
+                rowCoverAndTitle
+            }
+            .buttonStyle(.plain)
+            // Right half: standalone download control.
+            downloadControl
+                .buttonStyle(.borderless)
+        }
+        .listRowSeparator(.hidden)
+    }
+
+    // MARK: row halves
+
+    @ViewBuilder private var rowCoverAndTitle: some View {
         HStack(spacing: 12) {
             AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
                       token: settings.token) { Color.gray.opacity(0.2) }
@@ -345,77 +361,139 @@ struct BookRow: View {
                 if let f = book.fractionComplete {
                     ProgressView(value: f).scaleEffect(x: 1, y: 0.6, anchor: .leading)
                 }
-                // Inline download controls so the library row is self-contained
-                // and the user can trigger conversion without opening the player.
-                if downloads.isDownloaded(book.bookId) {
-                    HStack(spacing: 8) {
-                        Label("Gespeichert", systemImage: "checkmark.circle.fill")
-                            .font(.caption2).foregroundStyle(.green)
-                        Button(role: .destructive) {
-                            downloads.delete(book.bookId)
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .font(.caption2)
-                    }
-                } else {
-                    Button {
-                        handleDownload()
-                    } label: {
-                        Label(book.cacheStatus == "partial" ? "Generiert..." : "Herunterladen",
-                              systemImage: book.cacheStatus == "partial" ? "hourglass" : "arrow.down.circle")
-                    }
-                    .font(.caption)
-                    .foregroundStyle((book.cacheStatus == "partial" ? Color.secondary : Color.orange) as Color)
-                    .disabled(book.cacheStatus == "partial")
+                if let lastError {
+                    Label(lastError, systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.red).lineLimit(2)
                 }
             }
-            Spacer()
-            if downloads.isDownloaded(book.bookId) {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green)
-            }
+            Spacer(minLength: 0)
         }
+        .contentShape(Rectangle())
     }
 
-    private func handleDownload() {
-        guard book.cacheStatus != "partial" else { return }
-        Task {
-            do {
-                let response = try await api.convert(
-                    bookID: book.bookId,
-                    voiceID: voiceID,
-                    fmt: "m4b")
-                if book.cacheStatus == "ready" {
-                    downloads.download(book: book, jobID: response.jobId, api: api)
-                    return
-                }
-                while !Task.isCancelled {
-                    let status = try await api.status(jobID: response.jobId)
-                    if status.hasM4b || status.state == "done" || status.state == "failed" { break }
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-            } catch {
-                // Silent retry: the button remains available if the request fails.
+    @ViewBuilder private var downloadControl: some View {
+        if isDownloaded {
+            // Already on the device — show a trash button to free space.
+            Button(role: .destructive) {
+                downloads.delete(book.bookId)
+            } label: {
+                Image(systemName: "trash.circle")
+                    .font(.title2).foregroundStyle(.red)
             }
+        } else if inFlight {
+            // Job is running — show Abbrechen (cancel) button.
+            VStack(spacing: 2) {
+                Button {
+                    cancelActiveJob()
+                } label: {
+                    Label("Abbrechen", systemImage: "stop.circle.fill")
+                        .font(.caption).labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.gray)
+                .controlSize(.small)
+            }
+            .frame(width: 100)
+        } else {
+            // Available to trigger conversion/download.
+            Button {
+                startConvert()
+            } label: {
+                Label("Herunterladen", systemImage: "arrow.down.circle.fill")
+                    .font(.caption).labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .controlSize(.small)
         }
     }
 
     @ViewBuilder private var statusBadge: some View {
         let (label, color): (String, Color) = {
             switch book.cacheStatus {
-            case "ready":   return ("Ready", .green)
-            case "partial": return ("Streaming…", .orange)
-            case "cleaned": return ("Not converted", .secondary)
-            default:        return ("Not converted", .secondary)
+            case "ready":   return ("Bereit", .green)
+            case "partial": return ("Wird erstellt…", .orange)
+            default:        return ("Noch nicht erstellt", .secondary)
             }
         }()
         HStack(spacing: 6) {
             Text(label).font(.caption2).foregroundStyle(color)
-            if book.positionS > 1 { Text("• resume").font(.caption2).foregroundStyle(.secondary) }
+            if book.positionS > 1 {
+                Text("• fortsetzen").font(.caption2).foregroundStyle(.secondary)
+            }
             if showFolder, !book.folder.isEmpty {
-                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+    }
+
+    // MARK: actions
+
+    private func startConvert() {
+        if voiceID == 0 {
+            // Bug shield: never POST with the default voice id (returns
+            // 400 "unknown voice" and makes the click look like a no-op).
+            lastError = "Bitte zuerst eine Stimme auswählen (Einstellungen)."
+            return
+        }
+        Task {
+            await runDownloadFlow()
+        }
+    }
+
+    @MainActor
+    private func runDownloadFlow() async {
+        lastError = nil
+        do {
+            let resp = try await api.convert(
+                bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
+            activeJobID = resp.jobId
+            // Drive the row until the M4B is ready (or the job ends).
+            for _ in 0..<60 where !Task.isCancelled {
+                let s = try await api.status(jobID: resp.jobId)
+                if s.hasM4b || s.state == "done" {
+                    // Best-effort: pull the audio into local storage.
+                    downloads.download(book: book, jobID: resp.jobId, api: api)
+                    activeJobID = nil
+                    return
+                }
+                if s.state == "failed" {
+                    activeJobID = nil
+                    lastError = "Server-Fehler: \(s.state)"
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+            activeJobID = nil
+        } catch {
+            // Surface the failure instead of silently swallowing.
+            lastError = networkError(error)
+            activeJobID = nil
+        }
+    }
+
+    private func cancelActiveJob() {
+        guard let jid = activeJobID else { return }
+        Task {
+            do {
+                _ = try await api.cancelJob(jobID: jid)
+                activeJobID = nil
+            } catch {
+                lastError = networkError(error)
+            }
+        }
+    }
+
+    private func networkError(_ e: Error) -> String {
+        if let apiErr = e as? APIError {
+            switch apiErr {
+            case .badURL:    return "Ungültige Server-URL."
+            case .http(let code): return "Server HTTP \(code)."
+            case .decode:    return "Antwort nicht lesbar."
+            }
+        }
+        return "Netzwerkfehler."
     }
 }
 
@@ -466,19 +544,8 @@ struct StartedView: View {
                                         } label: { Label("Entfernen", systemImage: "trash") }
                                     }
                             } else {
-                                HStack(spacing: 0) {
-                                    NavigationLink(value: book) {
-                                        BookRowCompact(book: book)
-                                            .environmentObject(settings)
-                                    }
-                                    .buttonStyle(.plain)
-                                    BookRowDownloadControl(
-                                        book: book,
-                                        api: api,
-                                        downloads: DownloadManager.shared,
-                                        voiceID: voiceID)
-                                }
-                                .swipeActions(edge: .trailing) {
+                                BookRow(book: book)
+                                    .swipeActions(edge: .trailing) {
                                         Button(role: .destructive) {
                                             bookToDelete = book
                                         } label: { Label("Entfernen", systemImage: "trash") }
@@ -576,7 +643,6 @@ struct DownloadedView: View {
 
     private var totalBytes: Int64 { downloads.totalBytes }
     private var maxBytes: Int64 { downloads.maxLocalBytes }
-    private var api: APIClient { APIClient(settings: settings) }
 
     var body: some View {
         NavigationStack {
@@ -595,18 +661,8 @@ struct DownloadedView: View {
                     List {
                         Section {
                             ForEach(books) { book in
-                                HStack(spacing: 0) {
-                                    NavigationLink(value: book) {
-                                        BookRowCompact(book: book)
-                                            .environmentObject(settings)
-                                    }
-                                    .buttonStyle(.plain)
-                                    BookRowDownloadControl(
-                                        book: book,
-                                        api: api,
-                                        downloads: DownloadManager.shared,
-                                        voiceID: 0)
-                                }
+                                BookRow(book: book)
+                                    .environmentObject(settings)
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) {
                                         DownloadManager.shared.delete(book.bookId)
@@ -1023,100 +1079,5 @@ struct RecapSheet: View {
     private var cancellables = Set<AnyCancellable>()
 }
 
-/// Compact version of BookRow used inside NavigationLink (no interactive controls).
-struct BookRowCompact: View {
-    @EnvironmentObject var settings: AppSettings
-    @ObservedObject private var downloads = DownloadManager.shared
-    let book: Book
-    var showFolder = false
 
-    private var api: APIClient { APIClient(settings: settings) }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
-                      token: settings.token) { Color.gray.opacity(0.2) }
-                .scaledToFill()
-                .frame(width: 44, height: 60).clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(book.title).font(.headline).lineLimit(2)
-                Text(book.author).font(.subheadline).foregroundStyle(.secondary)
-                Text(book.cacheStatus == "ready" ? "Ready"
-                     : book.cacheStatus == "partial" ? "Generiert..."
-                     : book.cacheStatus == "cleaned" ? "Prepared"
-                     : "Not converted")
-                    .font(.caption2)
-                    .foregroundStyle(book.cacheStatus == "partial" ? .orange
-                                     : book.cacheStatus == "ready"   ? .green
-                                     : .secondary)
-            }
-            Spacer()
-            if downloads.isDownloaded(book.bookId) {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green)
-            }
-        }
-    }
-}
-
-/// Single-button download control used in the Library row.
-/// Sits next to a NavigationLink so taps are unambiguously routed:
-/// tapping the button starts conversion; tapping the row navigates to Player.
-struct BookRowDownloadControl: View {
-    let book: Book
-    let api: APIClient
-    @ObservedObject var downloads: DownloadManager
-    let voiceID: Int
-
-    var body: some View {
-        if downloads.isDownloaded(book.bookId) {
-            Button(role: .destructive) {
-                downloads.delete(book.bookId)
-            } label: {
-                Image(systemName: "trash")
-                    .frame(width: 36, height: 36)
-            }
-            .buttonStyle(.borderless)
-        } else if book.cacheStatus == "partial" {
-            // Server is busy — no action available, just visual confirmation.
-            Label("Wartet", systemImage: "hourglass")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 80)
-        } else {
-            Button {
-                Task {
-                    do {
-                        let resp = try await api.convert(
-                            bookID: book.bookId,
-                            voiceID: voiceID,
-                            fmt: "m4b")
-                        // Poll until job has m4b or ends in done/failed.
-                        var attempts = 0
-                        while attempts < 60 && !Task.isCancelled {
-                            let s = try await api.status(jobID: resp.jobId)
-                            if s.hasM4b || s.state == "done" || s.state == "failed" {
-                                break
-                            }
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
-                            attempts += 1
-                        }
-                        // best-effort: trigger local download on completion
-                        if book.cacheStatus == "ready" {
-                            downloads.download(book: book, jobID: resp.jobId, api: api)
-                        }
-                    } catch {
-                        // ignore
-                    }
-                }
-            } label: {
-                Label("Herunterladen", systemImage: "arrow.down.circle")
-                    .font(.caption)
-                    .frame(width: 90)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-        }
-    }
-}
 

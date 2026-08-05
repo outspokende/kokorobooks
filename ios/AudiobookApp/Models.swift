@@ -123,6 +123,17 @@ struct RecapStart: Codable {
     enum CodingKeys: String, CodingKey { case recapId = "recap_id" }
 }
 
+/// Response from POST /api/jobs/{id}/cancel. The server returns the new
+/// `status` string (usually "cancelled", but for an idempotent cancel of an
+/// already-finished job it could be "done" or "failed").
+struct CancelResponse: Codable {
+    let jobId: Int
+    let status: String
+    enum CodingKeys: String, CodingKey {
+        case jobId = "job_id", status
+    }
+}
+
 struct RecapStatus: Codable {
     let state: String          // processing | ready | failed
     let text: String?

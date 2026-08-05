@@ -108,6 +108,20 @@ struct APIClient {
                               as: RecapStart.self).recapId
     }
 
+    /// Cancel a queued or running job. Idempotent. Returns the new job status
+    /// (always "cancelled" once it has been successfully marked as such).
+    func cancelJob(jobID: Int) async throws -> String {
+        let r = try await send(request("/api/jobs/\(jobID)/cancel", method: "POST"),
+                               as: CancelResponse.self)
+        return r.status
+    }
+
+    /// Fetch the list of installed voices on the server.
+    struct Voice: Decodable { let id: Int; let name: String }
+    func voices() async throws -> [Voice] {
+        try await send(request("/api/voices"), as: [Voice].self)
+    }
+
     func recapStatus(_ recapID: String) async throws -> RecapStatus {
         try await send(request("/api/recap/\(recapID)"), as: RecapStatus.self)
     }
