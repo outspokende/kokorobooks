@@ -306,12 +306,9 @@ struct VoiceMenu: View {
 
 /// Shared row used by the library and the "Listening" shelf: cover, title,
 /// status, offline badge, and a progress bar once the book is started.
-/// One library row. Renders cover + title + status + a single self-contained
-/// download control. The row is split into two clearly-separated tap targets:
-/// the left half (cover/title) opens the player, the right half is the
-/// download/cancel button. No outer NavigationLink is required — the row
-/// wires up its own taps so the Library/Started/Downloaded views can stay
-/// agnostic.
+/// Library row with two clearly-separated tap targets:
+/// - Left: cover + title → opens Player (HLS stream)
+/// - Right: download button → starts server conversion + streams MP3
 struct BookRow: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
@@ -319,42 +316,27 @@ struct BookRow: View {
     let book: Book
     var showFolder = false
 
-    /// Active job id (server-assigned) for this book, or nil if no job is in
-    /// flight. Set when the user taps "Download" and cleared when the row
-    /// is refreshed from the library or polling observes hasM4b.
-    @State private var activeJobID: Int?
-    /// Current server-side generation progress (chunks done / total).
-    @State private var genDone = 0
-    @State private var genTotal = 0
-    /// Last network error message, shown briefly under the book title so the
-    /// user is never left wondering "did the click do anything?".
+    @State private var downloading = false
+    @State private var downloadProgress: Double = 0
     @State private var lastError: String?
 
     private var api: APIClient { APIClient(settings: settings) }
     private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
-    private var inFlight: Bool { activeJobID != nil }
-
-    /// Fraction complete for the active server-side generation job.
-    private var generationProgress: Double {
-        guard genTotal > 0 else { return 0 }
-        return Double(genDone) / Double(genTotal)
-    }
 
     var body: some View {
         HStack(spacing: 12) {
-            // Left half: opens player.
+            // Left: Play
             NavigationLink(value: book) {
                 rowCoverAndTitle
             }
             .buttonStyle(.plain)
-            // Right half: standalone download control.
-            downloadControl
-                .buttonStyle(.borderless)
+            // Right: Download
+            downloadButton
         }
         .listRowSeparator(.hidden)
     }
 
-    // MARK: row halves
+    // MARK: - Left (Play)
 
     @ViewBuilder private var rowCoverAndTitle: some View {
         HStack(spacing: 12) {
@@ -367,9 +349,6 @@ struct BookRow: View {
                 Text(book.title).font(.headline).lineLimit(2)
                 Text(book.author).font(.subheadline).foregroundStyle(.secondary)
                 statusBadge
-                if let f = book.fractionComplete {
-                    ProgressView(value: f).scaleEffect(x: 1, y: 0.6, anchor: .leading)
-                }
                 if let lastError {
                     Label(lastError, systemImage: "exclamationmark.triangle")
                         .font(.caption2).foregroundStyle(.red).lineLimit(2)
@@ -380,37 +359,32 @@ struct BookRow: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder private var downloadControl: some View {
+    // MARK: - Right (Download)
+
+    @ViewBuilder private var downloadButton: some View {
         if isDownloaded {
-            // Already on the device — show a trash button to free space.
-            Button(role: .destructive) {
-                downloads.delete(book.bookId)
-            } label: {
-                Image(systemName: "trash.circle")
-                    .font(.title2).foregroundStyle(.red)
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Button(role: .destructive) {
+                    downloads.delete(book.bookId)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption2)
+                }
             }
-        } else if inFlight {
-            // Job is running — show progress + Abbrechen button.
+        } else if downloading {
             VStack(spacing: 2) {
-                ProgressView(value: generationProgress)
-                    .frame(width: 80)
-                Text("\(genDone)/\(genTotal)")
+                ProgressView(value: downloadProgress)
+                    .frame(width: 60)
+                Text("\(Int(downloadProgress * 100))%")
                     .font(.system(size: 9).monospacedDigit())
                     .foregroundStyle(.secondary)
-                Button {
-                    cancelActiveJob()
-                } label: {
-                    Text("Abbrechen")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
-                .tint(.red)
             }
-            .frame(width: 90)
+            .frame(width: 70)
         } else {
-            // Available to trigger conversion/download.
             Button {
-                startConvert()
+                startDownload()
             } label: {
                 Label("Herunterladen", systemImage: "arrow.down.circle.fill")
                     .font(.caption).labelStyle(.titleAndIcon)
@@ -435,82 +409,88 @@ struct BookRow: View {
                 Text("• fortsetzen").font(.caption2).foregroundStyle(.secondary)
             }
             if showFolder, !book.folder.isEmpty {
-                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
 
-    // MARK: actions
+    // MARK: - Actions
 
-    private func startConvert() {
-        if voiceID == 0 {
-            // Bug shield: never POST with the default voice id (returns
-            // 400 "unknown voice" and makes the click look like a no-op).
-            lastError = "Bitte zuerst eine Stimme auswählen (Einstellungen)."
+    private func startDownload() {
+        guard voiceID != 0 else {
+            lastError = "Bitte zuerst eine Stimme wählen"
             return
         }
+        downloading = true
+        lastError = nil
+        downloadProgress = 0
         Task {
-            await runDownloadFlow()
+            await streamMP3Download()
         }
     }
 
     @MainActor
-    private func runDownloadFlow() async {
-        lastError = nil
-        genDone = 0; genTotal = 0
+    private func streamMP3Download() async {
         do {
+            // 1. Start server conversion
             let resp = try await api.convert(
                 bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
-            activeJobID = resp.jobId
-            // Drive the row until the M4B is ready (or the job ends).
-            for _ in 0..<60 where !Task.isCancelled {
-                let s = try await api.status(jobID: resp.jobId)
-                genDone = s.doneChunks
-                genTotal = s.totalChunks
-                if s.hasM4b || s.state == "done" {
-                    // Best-effort: pull the audio into local storage.
-                    downloads.download(book: book, jobID: resp.jobId, api: api)
-                    activeJobID = nil
-                    return
-                }
-                if s.state == "failed" {
-                    activeJobID = nil
-                    lastError = "Server-Fehler: \(s.state)"
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            let jobID = resp.jobId
+            // 2. Build authenticated URL request for the streaming MP3
+            guard let url = api.absURL("/api/jobs/\(jobID)/mp3") else {
+                throw APIError.badURL
             }
-            activeJobID = nil
+            var req = URLRequest(url: url)
+            req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
+            // 3. Stream-download to a temp file, reporting progress
+            let (tempURL, _) = try await URLSession.shared.download(
+                for: req, delegate: DownloadDelegate(bookID: book.bookId) { frac in
+                    self.downloadProgress = frac
+                })
+            // 4. Move into DownloadManager's offline storage
+            downloads.importDownloadedMP3(bookID: book.bookId, from: tempURL)
+            downloading = false
         } catch {
-            // Surface the failure instead of silently swallowing.
-            lastError = networkError(error)
-            activeJobID = nil
+            lastError = apiErrorText(error)
+            downloading = false
         }
     }
 
-    private func cancelActiveJob() {
-        guard let jid = activeJobID else { return }
-        Task {
-            do {
-                _ = try await api.cancelJob(jobID: jid)
-                activeJobID = nil
-                genDone = 0; genTotal = 0
-            } catch {
-                lastError = networkError(error)
-            }
-        }
-    }
-
-    private func networkError(_ e: Error) -> String {
+    private func apiErrorText(_ e: Error) -> String {
         if let apiErr = e as? APIError {
             switch apiErr {
-            case .badURL:    return "Ungültige Server-URL."
-            case .http(let code): return "Server HTTP \(code)."
-            case .decode:    return "Antwort nicht lesbar."
+            case .badURL:    return "Ungültige URL"
+            case .http(let c): return "Server Fehler \(c)"
+            case .decode:    return "Datenfehler"
             }
         }
-        return "Netzwerkfehler."
+        return "Netzwerkfehler"
+    }
+}
+
+/// Lightweight URLSessionDownloadDelegate for progress callbacks.
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    let bookID: String
+    let onProgress: (Double) -> Void
+    init(bookID: String, onProgress: @escaping (Double) -> Void) {
+        self.bookID = bookID
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        if totalBytesExpectedToWrite > 0 {
+            onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        } else {
+            // Growing file — progress is unknown, show indeterminate
+            onProgress(0)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // Handled by the await in streamMP3Download
     }
 }
 

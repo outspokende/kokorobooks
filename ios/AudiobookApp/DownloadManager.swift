@@ -134,6 +134,22 @@ final class DownloadManager: ObservableObject {
         downloaded[bookID] = nil; save()
     }
 
+    /// Import a downloaded MP3 file into offline storage. Called after the
+    /// streaming download completes. Registers the book in the offline manifest.
+    func importDownloadedMP3(bookID: String, from tempURL: URL) {
+        let dest = fileURL(bookID)
+        try? FileManager.default.createDirectory(
+            at: dest.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        // Atomically move from temp, replacing any previous download
+        _ = try? FileManager.default.replaceItemAt(dest, withItemAt: tempURL)
+        let size = (try? tempURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        downloaded[bookID] = DownloadedBook(
+            bookID: bookID, title: "", author: "",
+            sizeBytes: Int64(size), lastPlayed: Date())
+        save()
+    }
+
     /// Evict least-recently-played local books until under the soft cap.
     private func enforceBudget(keep: String?) {
         var total = totalBytes
