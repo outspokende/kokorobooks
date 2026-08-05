@@ -329,6 +329,35 @@ struct BookRow: View {
                 if let f = book.fractionComplete {
                     ProgressView(value: f).scaleEffect(x: 1, y: 0.6, anchor: .leading)
                 }
+                // Inline download controls so the library row is self-contained
+                // and the user can trigger conversion without opening the player.
+                if downloads.isDownloaded(book.bookId) {
+                    Label("Downloaded", systemImage: "checkmark.circle.fill")
+                        .font(.caption2).foregroundStyle(.green)
+                } else if book.cacheStatus == "partial" {
+                    Label("Server generating… refresh in a minute", systemImage: "hourglass")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
+                    Button {
+                        Task {
+                            do {
+                                let resp = try await api.convert(
+                                    bookID: book.bookId,
+                                    voiceID: 0,
+                                    fmt: "m4b")
+                                // Server accepted — UI will pick up the new state
+                                // when the auto-poll loop in Library reloads.
+                                _ = resp
+                            } catch {
+                                // ignore — user can retry
+                            }
+                        }
+                    } label: {
+                        Label("Prepare for offline", systemImage: "wand.and.stars")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
             Spacer()
             if downloads.isDownloaded(book.bookId) {
