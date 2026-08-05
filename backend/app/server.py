@@ -205,6 +205,31 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
             raise HTTPException(404, "unknown job")
         return _job_status(db, job_id)
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: int):
+        """Stop a queued or running job. Idempotent: cancelling an already-
+        cancelled or done job is a no-op. The job's audio_cache row is removed
+        so the Library view stops reporting cacheStatus='partial' for it."""
+        job = db.job(job_id)
+        if not job:
+            raise HTTPException(404, "unknown job")
+        supervisor.cancel_job(job_id)
+        # Drop the (stale) audio_cache row so cacheStatus flips back to 'cleaned'.
+        if (job.get("pdf_hash") and job.get("voice_id") is not None
+                and job.get("output_format")):
+            try:
+                from .supervisor import cache_key as _cache_key
+                ckey = _cache_key(job["pdf_hash"], job["voice_id"],
+                                  job["output_format"])
+                db.delete_cache(ckey)
+            except Exception:
+                pass  # best-effort
+        return {"job_id": job_id, "status": db.job(job_id)["status"]}
+
+    @app.get("/api/voices")
+    def voices_endpoint():
+        return [{"id": v["id"], "name": v["name"]} for v in db.voices()]
+
     @app.get("/api/stream/{job_id}/{filename}")
     def stream_file(job_id: int, filename: str):
         job = db.job(job_id)

@@ -190,12 +190,12 @@ class Supervisor:
         self._wake.set()
 
     def request_job(self, job_id: int) -> None:
-        """The book the user just opened takes priority. If a different job is
-        currently processing, preempt it — it checkpoints per chunk and goes
-        back to 'queued', so it resumes losslessly once this one is served."""
+        """The book the user just opened takes priority. The current job keeps
+        running until it finishes its chunk; only then the new job starts.
+        This is the single-slot queue: at most one generation runs at a time,
+        and job_ids are processed FIFO with `requested` jobs getting priority.
+        """
         self._preferred_job_id = job_id
-        if self._current_job_id is not None and self._current_job_id != job_id:
-            self._preempt.set()
         self._wake.set()
 
     def shutdown(self) -> None:
