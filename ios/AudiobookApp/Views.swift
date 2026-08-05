@@ -323,6 +323,9 @@ struct BookRow: View {
     /// flight. Set when the user taps "Download" and cleared when the row
     /// is refreshed from the library or polling observes hasM4b.
     @State private var activeJobID: Int?
+    /// Current server-side generation progress (chunks done / total).
+    @State private var genDone = 0
+    @State private var genTotal = 0
     /// Last network error message, shown briefly under the book title so the
     /// user is never left wondering "did the click do anything?".
     @State private var lastError: String?
@@ -330,6 +333,12 @@ struct BookRow: View {
     private var api: APIClient { APIClient(settings: settings) }
     private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
     private var inFlight: Bool { activeJobID != nil }
+
+    /// Fraction complete for the active server-side generation job.
+    private var generationProgress: Double {
+        guard genTotal > 0 else { return 0 }
+        return Double(genDone) / Double(genTotal)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -381,19 +390,23 @@ struct BookRow: View {
                     .font(.title2).foregroundStyle(.red)
             }
         } else if inFlight {
-            // Job is running — show Abbrechen (cancel) button.
+            // Job is running — show progress + Abbrechen button.
             VStack(spacing: 2) {
+                ProgressView(value: generationProgress)
+                    .frame(width: 80)
+                Text("\(genDone)/\(genTotal)")
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundStyle(.secondary)
                 Button {
                     cancelActiveJob()
                 } label: {
-                    Label("Abbrechen", systemImage: "stop.circle.fill")
-                        .font(.caption).labelStyle(.titleAndIcon)
+                    Text("Abbrechen")
+                        .font(.system(size: 10))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.gray)
-                .controlSize(.small)
+                .buttonStyle(.borderless)
+                .tint(.red)
             }
-            .frame(width: 100)
+            .frame(width: 90)
         } else {
             // Available to trigger conversion/download.
             Button {
@@ -445,6 +458,7 @@ struct BookRow: View {
     @MainActor
     private func runDownloadFlow() async {
         lastError = nil
+        genDone = 0; genTotal = 0
         do {
             let resp = try await api.convert(
                 bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
@@ -452,6 +466,8 @@ struct BookRow: View {
             // Drive the row until the M4B is ready (or the job ends).
             for _ in 0..<60 where !Task.isCancelled {
                 let s = try await api.status(jobID: resp.jobId)
+                genDone = s.doneChunks
+                genTotal = s.totalChunks
                 if s.hasM4b || s.state == "done" {
                     // Best-effort: pull the audio into local storage.
                     downloads.download(book: book, jobID: resp.jobId, api: api)
@@ -479,6 +495,7 @@ struct BookRow: View {
             do {
                 _ = try await api.cancelJob(jobID: jid)
                 activeJobID = nil
+                genDone = 0; genTotal = 0
             } catch {
                 lastError = networkError(error)
             }
@@ -724,6 +741,7 @@ struct PlayerView: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("voiceID") private var selectedVoiceID = 1
     let book: Book
     @StateObject private var vm: PlayerViewModelHolder = .init()
     @State private var tab = 0   // 0 = chapters, 1 = running text
@@ -889,7 +907,7 @@ struct PlayerView: View {
                     do {
                         let resp = try await api.convert(
                             bookID: book.bookId,
-                            voiceID: 0,  // default voice
+                            voiceID: selectedVoiceID,
                             fmt: "m4b")
                         for try await s in jobStatusStream(jobID: resp.jobId) {
                             if s.hasM4b || s.state == "failed" { break }
