@@ -41,12 +41,15 @@ struct ThemeToggleButton: View {
     }
 }
 
-/// Two tabs: the folder library, and the "Continue listening" shelf.
+/// Three tabs: the folder library, downloaded books (offline-only), and the
+/// "Continue listening" shelf.
 struct RootTabView: View {
     var body: some View {
         TabView {
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+            DownloadedView()
+                .tabItem { Label("Downloaded", systemImage: "arrow.down.circle.fill") }
             StartedView()
                 .tabItem { Label("Listening", systemImage: "headphones") }
         }
@@ -228,7 +231,7 @@ struct FolderView: View {
             }
             isOffline = false
             error = nil
-        } catch {
+        } catch let caught {
             // Offline fallback: show downloaded books from local manifest
             let offline = downloads.offlineBooks()
             if !offline.isEmpty && folder.isEmpty {
@@ -248,7 +251,7 @@ struct FolderView: View {
                 self.error = nil
             } else {
                 isOffline = false
-                self.error = "Load failed: \(error)"
+                self.error = "Load failed: \(caught)"
             }
         }
     }
@@ -453,16 +456,16 @@ struct StartedView: View {
             }
             books = serverBooks
             isOffline = false
-        } catch {
+        } catch let caught {
             // Offline fallback: show downloaded books with resumed progress
             let offline = downloads.offlineBooks()
             if !offline.isEmpty {
                 books = offline
                 isOffline = true
-                error = nil
+                self.error = nil
             } else {
                 isOffline = false
-                self.error = "Load failed: \(error)"
+                self.error = "Load failed: \(caught)"
             }
         }
     }
@@ -475,6 +478,95 @@ struct StartedView: View {
         LocalProgressStore.shared.remove(book.bookId)
         DownloadManager.shared.delete(book.bookId)
         try? await api.deleteProgress(bookID: book.bookId)
+    }
+}
+
+/// "Downloaded" shelf: every book that has been saved for offline playback,
+/// served straight from `DownloadManager.shared.offlineBooks()`. This view is
+/// deliberately network-free — it works even with the server unreachable and
+/// the Mac powered off, so it's the canonical entry point for offline audio.
+struct DownloadedView: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var downloads = DownloadManager.shared
+    @State private var books: [Book] = []
+
+    private var totalBytes: Int64 { downloads.totalBytes }
+    private var maxBytes: Int64 { downloads.maxLocalBytes }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if books.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.largeTitle).foregroundStyle(.secondary)
+                        Text("No downloads yet").font(.headline)
+                        Text("Tap “Download for offline” on a converted book to listen without the server.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
+                } else {
+                    List {
+                        Section {
+                            ForEach(books) { book in
+                                NavigationLink(value: book) {
+                                    BookRow(book: book)
+                                }
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        DownloadManager.shared.delete(book.bookId)
+                                        books = DownloadManager.shared.offlineBooks()
+                                    } label: {
+                                        Label("Delete download", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("\(books.count) book\(books.count == 1 ? "" : "s") downloaded")
+                        }
+                        Section {
+                            HStack {
+                                Text("\(formatBytes(totalBytes)) of \(formatBytes(maxBytes)) used")
+                                Spacer()
+                                ProgressView(value: maxBytes > 0
+                                             ? Double(totalBytes) / Double(maxBytes)
+                                             : 0)
+                                    .frame(width: 100)
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Downloaded")
+            .navigationDestination(for: Book.self) { book in
+                PlayerView(book: book).environmentObject(settings)
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
+                }
+            }
+            .refreshable { reload() }
+            .task { reload() }
+        }
+    }
+
+    /// Read straight from disk. No `APIClient` call — the view must work
+    /// fully offline.
+    private func reload() {
+        books = DownloadManager.shared.offlineBooks()
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / (1024 * 1024)
+        if mb >= 1024 {
+            return String(format: "%.2f GB", mb / 1024)
+        }
+        return String(format: "%.0f MB", mb)
     }
 }
 
@@ -638,6 +730,52 @@ struct PlayerView: View {
             Button { vm.model?.downloadForOffline() } label: {
                 Label("Download for offline", systemImage: "arrow.down.circle")
             }.font(.footnote)
+        } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
+            // Show the conversion start button — tapping this starts server-side
+            // TTS generation. The user can track progress in real time.
+            Button {
+                Task {
+                    do {
+                        let resp = try await api.convert(
+                            bookID: book.bookId,
+                            voiceID: 1,  // TODO: use selected voice
+                            fmt: "m4b")
+                        // Poll job status until hasM4b is true or job fails
+                        for try await status in jobStatusStream(jobID: resp.jobId) {
+                            if status.hasM4b { break }
+                            if status.state == "failed" { break }
+                        }
+                    } catch {
+                        // Conversion failed silently — the user can retry
+                    }
+                }
+            } label: {
+                Label("Prepare for offline", systemImage: "wand.and.stars")
+            }.font(.footnote)
+            .foregroundStyle(.orange)
+        }
+    }
+
+    /// Polls job status every 3 s until hasM4b, done, or failed.
+    @MainActor
+    private func jobStatusStream(jobID: Int) -> AsyncStream<JobStatus> {
+        AsyncStream { cont in
+            Task {
+                while !Task.isCancelled {
+                    do {
+                        let s = try await api.status(jobID: jobID)
+                        cont.yield(s)
+                        if s.hasM4b || s.state == "done" || s.state == "failed" {
+                            cont.finish()
+                            break
+                        }
+                    } catch {
+                        cont.finish()
+                        break
+                    }
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+            }
         }
     }
 }
