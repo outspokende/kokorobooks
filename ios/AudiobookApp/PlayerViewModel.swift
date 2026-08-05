@@ -40,15 +40,19 @@ final class PlayerViewModel: ObservableObject {
     func start() {
         configureAudioSession()
         Task { await fetchCover() }
-        // Offline-first: if the finished M4B is on the device, play it directly
-        // — no server round-trip — and still restore the synced position.
-        if downloads.isDownloaded(book.bookId) {
+        // Offline-first: if the finished M4B is on disk AND valid, play locally.
+        if downloads.isDownloaded(book.bookId),
+           FileManager.default.fileExists(atPath: downloads.fileURL(book.bookId).path) {
             offline = true
             downloads.markPlayed(book.bookId)
             attachPlayer(item: AVPlayerItem(url: downloads.fileURL(book.bookId)))
             if let lines = downloads.localTranscript(book.bookId) { transcript = lines }
             Task { await restorePosition() }
             return
+        }
+        // Clear stale download entries with missing files.
+        if downloads.isDownloaded(book.bookId) {
+            downloads.delete(book.bookId)
         }
         Task {
             // Kick off (or attach to) the conversion. Don't attach the player
