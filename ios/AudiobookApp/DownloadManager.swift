@@ -85,6 +85,33 @@ final class DownloadManager: ObservableObject {
 
     // MARK: - Download
 
+    // MARK: - Downloads
+
+    /// Download from the streaming MP3 endpoint (growing file during generation).
+    /// The connection stays open until the server finishes, then the file is
+    /// moved into offline storage automatically. No progress callback since
+    /// the total size is unknown until the end.
+    func downloadStreamingMP3(bookID: String, jobID: Int,
+                               api: APIClient, onDone: @escaping () -> Void) {
+        guard let url = api.absURL("/api/jobs/\(jobID)/mp3") else { return }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(api.settings.token)",
+                     forHTTPHeaderField: "Authorization")
+
+        let session = URLSession(
+            configuration: .default,
+            delegate: StreamingDownloadHandler(
+                bookID: bookID,
+                onComplete: { [weak self] tempURL in
+                    guard let self, let tempURL else { return }
+                    self.importDownloadedMP3(bookID: bookID, from: tempURL)
+                    DispatchQueue.main.async { onDone() }
+                }),
+            delegateQueue: nil)
+        let task = session.downloadTask(with: req)
+        task.resume()
+    }
+
     func download(book: Book, jobID: Int, api: APIClient) {
         guard !isDownloaded(book.bookId), tasks[book.bookId] == nil else { return }
         guard let url = api.absURL("/api/jobs/\(jobID)/audio") else { return }
@@ -179,6 +206,37 @@ final class DownloadManager: ObservableObject {
     private func save() {
         let list = Array(downloaded.values)
         if let data = try? JSONEncoder().encode(list) { try? data.write(to: manifestURL) }
+    }
+}
+
+/// Minimal URLSessionDownloadDelegate that captures the completed download
+/// location. Used for streaming MP3 downloads where total size is unknown.
+final class StreamingDownloadHandler: NSObject, URLSessionDownloadDelegate {
+    let bookID: String
+    let onComplete: (URL?) -> Void
+
+    init(bookID: String, onComplete: @escaping (URL?) -> Void) {
+        self.bookID = bookID
+        self.onComplete = onComplete
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.moveItem(at: location, to: tmp)
+        onComplete(tmp)
+        session.finishTasksAndInvalidate()
+    }
+
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        if let error {
+            print("Streaming download error for \(bookID): \(error)")
+            onComplete(nil)
+        }
     }
 }
 

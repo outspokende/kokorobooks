@@ -406,23 +406,14 @@ struct BookRow: View {
             do {
                 let resp = try await api.convert(
                     bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
-                let jobID = resp.jobId
-                // Poll until server finishes generating the M4B.
-                for _ in 0..<120 where !Task.isCancelled {
-                    let s = try await api.status(jobID: jobID)
-                    if s.hasM4b {
-                        downloads.download(book: book, jobID: jobID, api: api)
-                        waiting = false
-                        return
-                    }
-                    if s.state == "failed" {
-                        waiting = false
-                        lastError = "Server-Fehler"
-                        return
-                    }
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                }
-                waiting = false
+                // Stream the growing MP3 immediately. Server writes chunks as
+                // they're generated; client receives them in real time.
+                // Connection closes when job finishes → download complete.
+                downloads.downloadStreamingMP3(
+                    bookID: book.bookId,
+                    jobID: resp.jobId,
+                    api: api,
+                    onDone: { waiting = false })
             } catch {
                 lastError = "Netzwerkfehler"
                 waiting = false
