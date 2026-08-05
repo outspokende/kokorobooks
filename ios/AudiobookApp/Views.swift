@@ -306,9 +306,9 @@ struct VoiceMenu: View {
 
 /// Shared row used by the library and the "Listening" shelf: cover, title,
 /// status, offline badge, and a progress bar once the book is started.
-/// Library row with two clearly-separated tap targets:
-/// - Left: cover + title → opens Player (HLS stream)
-/// - Right: download button → starts server conversion + streams MP3
+/// Library row with two small action icons on the right side:
+/// ▶️ Play — opens the player (HLS stream)
+/// ⬇️ Download — starts server conversion, waits, then downloads M4B
 struct BookRow: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
@@ -316,83 +316,58 @@ struct BookRow: View {
     let book: Book
     var showFolder = false
 
-    @State private var downloading = false
-    @State private var downloadProgress: Double = 0
+    @State private var waiting: Bool = false
     @State private var lastError: String?
 
     private var api: APIClient { APIClient(settings: settings) }
     private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
+    private var isDownloading: Bool { downloads.progress[book.bookId] != nil }
 
     var body: some View {
         HStack(spacing: 12) {
-            // Left: Play
+            // Left: cover + title → opens player
             NavigationLink(value: book) {
-                rowCoverAndTitle
+                HStack(spacing: 12) {
+                    AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                              token: settings.token) { Color.gray.opacity(0.2) }
+                        .scaledToFill()
+                        .frame(width: 44, height: 60).clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(book.title).font(.headline).lineLimit(2)
+                        Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        statusBadge
+                        if let lastError {
+                            Label(lastError, systemImage: "exclamationmark.triangle")
+                                .font(.caption2).foregroundStyle(.red).lineLimit(2)
+                        }
+                    }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // Right: Download
-            downloadButton
-        }
-        .listRowSeparator(.hidden)
-    }
-
-    // MARK: - Left (Play)
-
-    @ViewBuilder private var rowCoverAndTitle: some View {
-        HStack(spacing: 12) {
-            AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
-                      token: settings.token) { Color.gray.opacity(0.2) }
-                .scaledToFill()
-                .frame(width: 44, height: 60).clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(book.title).font(.headline).lineLimit(2)
-                Text(book.author).font(.subheadline).foregroundStyle(.secondary)
-                statusBadge
-                if let lastError {
-                    Label(lastError, systemImage: "exclamationmark.triangle")
-                        .font(.caption2).foregroundStyle(.red).lineLimit(2)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-    }
-
-    // MARK: - Right (Download)
-
-    @ViewBuilder private var downloadButton: some View {
-        if isDownloaded {
-            HStack(spacing: 4) {
+            // Right: action icons
+            if isDownloaded {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                Button(role: .destructive) {
-                    downloads.delete(book.bookId)
+            } else if isDownloading {
+                ProgressView(value: downloads.progress[book.bookId] ?? 0)
+                    .frame(width: 36, height: 36)
+            } else if waiting {
+                ProgressView()
+                    .frame(width: 24, height: 24)
+            } else {
+                Button {
+                    startDownload()
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.caption2)
+                    Image(systemName: "arrow.down.circle")
+                        .font(.title3)
                 }
+                .buttonStyle(.borderless)
+                .tint(.orange)
             }
-        } else if downloading {
-            VStack(spacing: 2) {
-                ProgressView(value: downloadProgress)
-                    .frame(width: 60)
-                Text("\(Int(downloadProgress * 100))%")
-                    .font(.system(size: 9).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 70)
-        } else {
-            Button {
-                startDownload()
-            } label: {
-                Label("Herunterladen", systemImage: "arrow.down.circle.fill")
-                    .font(.caption).labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-            .controlSize(.small)
         }
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder private var statusBadge: some View {
@@ -400,16 +375,18 @@ struct BookRow: View {
             switch book.cacheStatus {
             case "ready":   return ("Bereit", .green)
             case "partial": return ("Wird erstellt…", .orange)
-            default:        return ("Noch nicht erstellt", .secondary)
+            default:        return ("", .secondary)
             }
         }()
-        HStack(spacing: 6) {
-            Text(label).font(.caption2).foregroundStyle(color)
-            if book.positionS > 1 {
-                Text("• fortsetzen").font(.caption2).foregroundStyle(.secondary)
-            }
-            if showFolder, !book.folder.isEmpty {
-                Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        if !label.isEmpty {
+            HStack(spacing: 6) {
+                Text(label).font(.caption2).foregroundStyle(color)
+                if book.positionS > 1 {
+                    Text("• fortsetzen").font(.caption2).foregroundStyle(.secondary)
+                }
+                if showFolder, !book.folder.isEmpty {
+                    Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
         }
     }
@@ -418,79 +395,33 @@ struct BookRow: View {
 
     private func startDownload() {
         guard voiceID != 0 else {
-            lastError = "Bitte zuerst eine Stimme wählen"
+            lastError = "Bitte Stimme wählen"
             return
         }
-        downloading = true
+        waiting = true
         lastError = nil
-        downloadProgress = 0
         Task {
-            await streamMP3Download()
-        }
-    }
-
-    @MainActor
-    private func streamMP3Download() async {
-        do {
-            // 1. Start server conversion
-            let resp = try await api.convert(
-                bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
-            let jobID = resp.jobId
-            // 2. Build authenticated URL request for the streaming MP3
-            guard let url = api.absURL("/api/jobs/\(jobID)/mp3") else {
-                throw APIError.badURL
-            }
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(settings.token)", forHTTPHeaderField: "Authorization")
-            // 3. Stream-download to a temp file, reporting progress
-            let (tempURL, _) = try await URLSession.shared.download(
-                for: req, delegate: DownloadDelegate(bookID: book.bookId) { frac in
-                    self.downloadProgress = frac
-                })
-            // 4. Move into DownloadManager's offline storage
-            downloads.importDownloadedMP3(bookID: book.bookId, from: tempURL)
-            downloading = false
-        } catch {
-            lastError = apiErrorText(error)
-            downloading = false
-        }
-    }
-
-    private func apiErrorText(_ e: Error) -> String {
-        if let apiErr = e as? APIError {
-            switch apiErr {
-            case .badURL:    return "Ungültige URL"
-            case .http(let c): return "Server Fehler \(c)"
-            case .decode:    return "Datenfehler"
+            defer { waiting = false }
+            do {
+                let resp = try await api.convert(
+                    bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
+                // Poll until the server has finished generating the M4B.
+                for _ in 0..<120 where !Task.isCancelled {
+                    let s = try await api.status(jobID: resp.jobId)
+                    if s.hasM4b {
+                        downloads.download(book: book, jobID: resp.jobId, api: api)
+                        return
+                    }
+                    if s.state == "failed" {
+                        lastError = "Server-Fehler"
+                        return
+                    }
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                }
+            } catch {
+                lastError = "Netzwerkfehler"
             }
         }
-        return "Netzwerkfehler"
-    }
-}
-
-/// Lightweight URLSessionDownloadDelegate for progress callbacks.
-private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
-    let bookID: String
-    let onProgress: (Double) -> Void
-    init(bookID: String, onProgress: @escaping (Double) -> Void) {
-        self.bookID = bookID
-        self.onProgress = onProgress
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        if totalBytesExpectedToWrite > 0 {
-            onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
-        } else {
-            // Growing file — progress is unknown, show indeterminate
-            onProgress(0)
-        }
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
-        // Handled by the await in streamMP3Download
     }
 }
 
@@ -721,7 +652,6 @@ struct PlayerView: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("voiceID") private var selectedVoiceID = 1
     let book: Book
     @StateObject private var vm: PlayerViewModelHolder = .init()
     @State private var tab = 0   // 0 = chapters, 1 = running text
@@ -774,7 +704,6 @@ struct PlayerView: View {
 
             HStack(spacing: 28) {
                 sleepTimerControl
-                downloadControl
             }
 
             let hasText = !(vm.model?.transcript.isEmpty ?? true)
@@ -859,68 +788,6 @@ struct PlayerView: View {
                 systemImage: remaining != nil ? "moon.zzz.fill" : "moon.zzz"
             ).font(.footnote)
                 .foregroundStyle(remaining != nil ? tint : .secondary)
-        }
-    }
-
-    /// Offline-download affordance: download when the M4B is ready, show a
-    /// progress ring while downloading, or a delete option once stored.
-    @ViewBuilder private var downloadControl: some View {
-        if downloads.isDownloaded(book.bookId) {
-            Button(role: .destructive) { downloads.delete(book.bookId) } label: {
-                Label("Entfernen", systemImage: "trash")
-            }.font(.footnote)
-        } else if let frac = downloads.progress[book.bookId] {
-            HStack {
-                ProgressView(value: frac).frame(width: 120)
-                Text("\(Int(frac * 100))%").font(.caption)
-            }
-        } else if vm.model?.status?.hasM4b == true {
-            Button { vm.model?.downloadForOffline() } label: {
-                Label("Herunterladen", systemImage: "arrow.down.circle")
-            }.font(.footnote)
-        } else if book.cacheStatus == "partial" {
-            Label("Generiert...", systemImage: "hourglass")
-                .font(.caption2).foregroundStyle(.secondary)
-        } else if book.cacheStatus == "none" || book.cacheStatus == "cleaned" {
-            Button {
-                Task {
-                    do {
-                        let resp = try await api.convert(
-                            bookID: book.bookId,
-                            voiceID: selectedVoiceID,
-                            fmt: "m4b")
-                        for try await s in jobStatusStream(jobID: resp.jobId) {
-                            if s.hasM4b || s.state == "failed" { break }
-                        }
-                    } catch { /* silent retry */ }
-                }
-            } label: {
-                Label("Herunterladen", systemImage: "arrow.down.circle")
-            }.font(.footnote)
-            .foregroundStyle(.orange)
-        }
-    }
-
-    /// Polls job status every 3 s until hasM4b, done, or failed.
-    @MainActor
-    private func jobStatusStream(jobID: Int) -> AsyncStream<JobStatus> {
-        AsyncStream { cont in
-            Task {
-                while !Task.isCancelled {
-                    do {
-                        let s = try await api.status(jobID: jobID)
-                        cont.yield(s)
-                        if s.hasM4b || s.state == "done" || s.state == "failed" {
-                            cont.finish()
-                            break
-                        }
-                    } catch {
-                        cont.finish()
-                        break
-                    }
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-            }
         }
     }
 }
