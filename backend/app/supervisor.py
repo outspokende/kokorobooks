@@ -29,7 +29,7 @@ from typing import Optional
 
 from . import config
 from .db import DB
-from .hls import StreamAssembler
+from .hls import StreamAssembler, MP3Streamer
 ENGINE_KIND = os.environ.get("KBS_ENGINE", "kokoro")
 
 
@@ -332,6 +332,14 @@ class Supervisor:
                 "ORDER BY idx", (job_id,)):
             assembler.feed_wav(ch["wav_path"], bool(ch["para_end"]), is_last=False)
 
+        # Also write chunks into a growing MP3 file for direct download.
+        mp3_path = work_dir.parent / "download.mp3"
+        mp3_streamer = MP3Streamer(mp3_path)
+        for ch in self.db.query(
+                "SELECT * FROM chunks WHERE job_id=? AND status='done' "
+                "ORDER BY idx", (job_id,)):
+            mp3_streamer.feed_wav(ch["wav_path"], bool(ch["para_end"]), is_last=False)
+
         worker: Optional[WorkerHandle] = None
         chunks_since_recycle = 0
         try:
@@ -395,6 +403,8 @@ class Supervisor:
                     # Stream this chunk immediately (single worker => in order).
                     assembler.feed_wav(ev["wav"], bool(chunk["para_end"]),
                                        is_last=False)
+                    mp3_streamer.feed_wav(ev["wav"], bool(chunk["para_end"]),
+                                          is_last=False)
                     chunks_since_recycle += 1
                 elif ev.get("event") == "chunk_failed":
                     log(f"chunk {chunk['idx']} failed in-engine: {ev.get('error')}")
@@ -411,6 +421,7 @@ class Supervisor:
             # Close the muxer: flushes the last segment + writes #EXT-X-ENDLIST
             # if complete, or leaves a playable partial playlist otherwise.
             assembler.finalize()
+            mp3_streamer.finalize()
 
         if self._shutdown.is_set():
             return

@@ -9,13 +9,14 @@ Differences from the desktop edition:
 """
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from . import config, library
@@ -204,6 +205,40 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
         if not db.job(job_id):
             raise HTTPException(404, "unknown job")
         return _job_status(db, job_id)
+
+    @app.get("/api/jobs/{job_id}/mp3")
+    async def stream_mp3(job_id: int):
+        """Stream the growing MP3 file for a running job. Valid MP3 from the
+        first chunk — clients can start downloading immediately while
+        generation is still in progress. Connection stays open until the
+        job completes or the client disconnects."""
+        job = db.job(job_id)
+        if not job:
+            raise HTTPException(404, "unknown job")
+        if not job.get("work_dir"):
+            raise HTTPException(404, "job has no work directory yet")
+        mp3_path = Path(job["work_dir"]).parent / "download.mp3"
+        if not mp3_path.exists():
+            raise HTTPException(404, "mp3 not available (job may not have started yet)")
+
+        async def file_iterator():
+            with open(mp3_path, "rb") as f:
+                while True:
+                    data = f.read(65536)
+                    if not data:
+                        current = db.job(job_id)
+                        if current and current["status"] == "processing":
+                            await asyncio.sleep(0.5)
+                            continue
+                        break
+                    yield data
+
+        filename = (job.get("title") or "audiobook") + ".mp3"
+        # Sanitize filename
+        filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+        return StreamingResponse(
+            file_iterator(), media_type="audio/mpeg",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: int):
