@@ -208,7 +208,17 @@ struct FolderView: View {
             }
         }
         .refreshable { await load() }
-        .task(id: "\(query)|\(voiceID)") { await load() }
+        .task(id: "\(query)|\(voiceID)") {
+            await load()
+            // Auto-poll every 30s so cacheStatus updates while server generates.
+            // wrap in Task to allow `try await` inside the non-throwing .task closure.
+            Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 30_000_000_000)
+                    if !Task.isCancelled { await load() }
+                }
+            }
+        }
         .overlay { if let e = error, !isOffline { Text(e).foregroundStyle(.red).padding() } }
     }
 
