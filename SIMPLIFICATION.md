@@ -1,58 +1,67 @@
-# KokoroBooks Simplification — Plan
+# KokoroBooks — endgültige Simplifizierung
 
-## Reality check: what the user is actually experiencing
+## Was der Nutzer will (final)
 
-User: "I tap the download button and nothing happens."
+Jedes Buch hat genau **zwei Aktionen**, immer sichtbar, nie versteckt:
 
-Three confirmed bugs make this happen:
+| Aktion | Button | Server | Lokal |
+|---|---|---|---|
+| **Streaming starten** | ▶️ Play | HLS-Stream sofort (während Generierung) | Nichts, nur Stream |
+| **Download starten** | ⬇️ Download | MP3 wird generiert (Piper) | Wird direkt während Generierung heruntergeladen (Streaming-Download) |
 
-### Bug #1 (root cause of "nothing happens"): voice_id=0 default
-- `@AppStorage("voiceID") private var voiceID = 0` in DownloadControl
-- `api.convert(bookID:, voiceID: 0, ...)` -> server returns 400 "unknown voice"
-- `BookRowDownloadControl`'s Button action: `} catch { /* ignore */ }` — silent
-- **The button-tap DOES fire, the request DOES go out, the server DOES reject, but the user sees nothing because errors are swallowed.**
+**Danach:** MP3 lokal auf dem iPhone verfügbar, Offline-Player spielt es ab.
 
-### Bug #2: Server accepts unlimited concurrent jobs
-- `supervisor._pick_job()` has no concurrency guard
-- 9 books now queued in parallel
-- CPU contention: N95 with kokoro-onnx can only really do 1-2 at a time
-- Net effect: every job is slow because they fight for CPU/memory
+## Was muss passieren (Architektur)
 
-### Bug #3: No cancel endpoint
-- `supervisor.cancel_job()` exists internally but no HTTP route
-- Stopping a stuck generation requires SSH + manual job deletion
+### Server-Seite (Backend)
 
-## Plan (in this order)
+1. **Engine:** Piper TTS (`KBS_ENGINE=piper`), Modell `en_US-joe-medium`
+2. **API:** `POST /api/convert` → startet Piper-Job, returned `job_id`
+   - Der Job generiert Chunks nacheinander
+   - **Gleichzeitig** wird das MP3 in den Output-Stream geschrieben
+3. **API:** `GET /api/jobs/{id}/mp3` → streamt die in-progress MP3-Datei
+   - Client kann sofort mit Download beginnen, auch wenn Job noch läuft
+   - `Content-Length` ist nicht bekannt → Chunked Transfer-Encoding
+4. **Single-Slot:** Nur EIN Job läuft gleichzeitig (bereits implementiert)
+5. **Cancel:** `POST /api/jobs/{id}/cancel` (bereits implementiert)
 
-### Phase 1: Backend (server.py + supervisor.py)
-1. **Add concurrency limit = 1** to supervisor: introduce `_active_slot` field, refuse
-   to start a new job if `len(active) >= 1`. Return `"queued"` but do not start the
-   worker. The worker's exit on completion calls `start_queue()` to pick the next.
-2. **Add POST /api/jobs/{job_id}/cancel** that calls `supervisor.cancel_job(id)`,
-   deletes the audio_cache row for that cache key, and returns the new job list.
-3. **Auto-promote** a queued job when the single slot frees up.
+### iOS-Seite
 
-### Phase 2: iOS (Views.swift, APIClient.swift)
-1. **Consolidate 3 BookRow variants → 1 `BookRow`** that owns its tap targets
-   internally (no outer NavigationLink swallowing the button area).
-2. **Add visible error feedback** for convert failures: show a toast/banner
-   inside the row that says "Server error: <message>". Keep it minimal.
-3. **Add "Abbrechen" (cancel) button** next to the progress indicator so the user
-   can stop a stuck generation.
-4. **Default voice_id** to the user's previously selected voice (not 0).
-   If user has never selected a voice, prompt them to pick one from /api/voices
-   and use the first available as fallback (already done in `load()`).
+1. **BookRow vereinfachen:** ZWEI Buttons:
+   - ▶️ **Play** (links) → NavigationLink zum Player, startet HLS-Stream
+   - ⬇️ **Download** (rechts) → startet Konvertierung + lädt MP3 herunter
+2. **Download-Button-Verhalten:**
+   - Tap → `POST /api/convert` → `job_id`
+   - Dann sofort `GET /api/jobs/{id}/mp3` als `URLSession.downloadTask`
+   - Fortschrittsbalken zeigt Download-Fortschritt (nicht Server-Generierung!)
+   - Wenn Download fertig → Button wird "✅ Gespeichert"
+3. **Kein PlayerView-Download mehr:** Der Download lebt nur im BookRow
+4. **Offline-Player:** DownloadedView spielt lokale MP3s ab (existiert bereits)
 
-### Phase 3: Verification
-1. Backend: hit POST /api/convert + GET /api/jobs/{id}/status to confirm
-   single-slot queueing (one queued stays queued while another runs).
-2. iOS: xcodebuild Debug build clean.
-3. Real test on iPhone: tap download, see either (a) progress bar with %
-   or (b) red error text within 2 seconds. Never silent.
+### Was NICHT mehr passiert
 
-## What NOT to do (rules for this session)
+- ❌ Kein "Prepare for offline" / "Server generating..." — nur Download mit Fortschritt
+- ❌ Kein PlayerView-eigener Download-Button — das verwirrt nur
+- ❌ Kein Cancel nötig — der Download wird vom Client gesteuert, nicht vom Server
+- ❌ Kein Staging zwischen "nicht bereit" und "bereit" — MP3 wird direkt gestreamt
 
-- No new feature additions
-- No new structs unless required for consolidation
-- Every code change must be followed by hermes-verify tempfile result
-- If something doesn't work end-to-end, revert and re-plan, don't patch
+## Implementierungsreihenfolge
+
+### Phase 1: Backend (Piper + MP3-Streaming)
+1. Piper Engine in `engine/piper.py` (existiert)
+2. `POST /api/convert` → Piper-Job starten, MP3 direkt schreiben
+3. `GET /api/jobs/{id}/mp3` → chunked MP3-Stream während Generierung
+4. Server deployed → Test mit curl
+
+### Phase 2: iOS
+1. BookRow: Play-Button links, Download-Button rechts
+2. Download startet → `POST /api/convert` → `GET /api/jobs/{id}/mp3` parallel
+3. Fortschrittsbalken während Download
+4. Kein PlayerView-Download mehr
+5. Offline-Player aus DownloadedView
+
+## Geschätzte Dauer
+- Backend: 45 min (Piper-Integration ist neu, MP3-Streaming braucht Worker-Änderung)
+- iOS: 30 min (Buttons umbauen + Download-Task)
+- Test: 15 min
+- **Gesamt: ~90 min**

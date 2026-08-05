@@ -271,8 +271,16 @@ class Supervisor:
 
         voice = self.db.voice(job["voice_id"]) if job["voice_id"] else None
         if not voice:
-            self.db.update_job(job_id, status="failed", error="voice not found")
-            return
+            # When using piper (or any engine that ignores ref_audio), fall back
+            # to the first available voice so old jobs still work.
+            if ENGINE_KIND == "piper":
+                all_voices = self.db.voices()
+                voice = all_voices[0] if all_voices else None
+                if voice:
+                    self.db.update_job(job_id, voice_id=voice["id"])
+            if not voice:
+                self.db.update_job(job_id, status="failed", error="voice not found")
+                return
         if not Path(job["pdf_path"]).exists():
             self.db.update_job(job_id, status="failed", error="PDF not found")
             return

@@ -24,6 +24,9 @@ def create_engine(kind: str) -> "TTSEngine":
     if kind == "kokoro-onnx":
         from .kokoro_onnx import KokoroOnnxEngine
         return KokoroOnnxEngine()
+    if kind == "piper":
+        from .piper import PiperEngine
+        return PiperEngine()
     if kind == "fake":
         from .fake import FakeEngine
         return FakeEngine()
