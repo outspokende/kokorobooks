@@ -401,25 +401,43 @@ struct BookRow: View {
         waiting = true
         lastError = nil
         Task {
-            defer { waiting = false }
             do {
                 let resp = try await api.convert(
                     bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
-                // Poll until the server has finished generating the M4B.
-                for _ in 0..<120 where !Task.isCancelled {
-                    let s = try await api.status(jobID: resp.jobId)
-                    if s.hasM4b {
-                        downloads.download(book: book, jobID: resp.jobId, api: api)
-                        return
-                    }
-                    if s.state == "failed" {
-                        lastError = "Server-Fehler"
-                        return
-                    }
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                let jobID = resp.jobId
+                // Stream the growing MP3 immediately — no waiting for hasM4b.
+                // Server writes MP3 chunks as they're generated, client receives
+                // them in real time. Connection closes naturally when job is done.
+                guard let url = api.absURL("/api/jobs/\(jobID)/mp3") else {
+                    throw APIError.badURL
                 }
+                var req = URLRequest(url: url)
+                req.setValue("Bearer \(settings.token)",
+                             forHTTPHeaderField: "Authorization")
+
+                // Use a dedicated URLSession with delegate for streaming.
+                let delegate = StreamingDownloadDelegate(
+                    bookID: book.bookId,
+                    onProgress: { done in
+                        Task { @MainActor in
+                            downloads.setProgress(done, for: book.bookId)
+                        }
+                    },
+                    onComplete: { tempURL in
+                        Task { @MainActor in
+                            downloads.importDownloadedMP3(
+                                bookID: book.bookId, from: tempURL)
+                            waiting = false
+                        }
+                    })
+                let session = URLSession(
+                    configuration: .default,
+                    delegate: delegate, delegateQueue: nil)
+                let task = session.downloadTask(with: req)
+                task.resume()
             } catch {
                 lastError = "Netzwerkfehler"
+                waiting = false
             }
         }
     }
@@ -943,6 +961,53 @@ struct RecapSheet: View {
     }
     private var cancellables = Set<AnyCancellable>()
 }
+
+/// URLSessionDownloadDelegate for streaming MP3 downloads.
+/// Since the file grows while being generated, totalBytesExpectedToWrite
+/// may be -1 (unknown). The delegate reports received bytes and triggers
+/// onComplete when the connection closes (server finished generating).
+final class StreamingDownloadDelegate: NSObject, URLSessionDownloadDelegate {
+    let bookID: String
+    let onProgress: (Double) -> Void  // bytes received so far
+    let onComplete: (URL) -> Void
+
+    private var byteCount: Int64 = 0
+
+    init(bookID: String,
+         onProgress: @escaping (Double) -> Void,
+         onComplete: @escaping (URL) -> Void) {
+        self.bookID = bookID
+        self.onProgress = onProgress
+        self.onComplete = onComplete
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        byteCount = totalBytesWritten
+        // Report a fractional progress (0..0.99) — the bar fills slowly
+        // but never reaches 100% until the connection closes.
+        onProgress(Double(totalBytesWritten) / max(Double(totalBytesWritten + 1), 1))
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        onProgress(1.0)  // 100%
+        onComplete(location)
+    }
+
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        if let error {
+            print("Streaming download error for \(bookID): \(error)")
+        }
+    }
+}
+
 
 
 

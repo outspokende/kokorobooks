@@ -14,6 +14,11 @@ final class DownloadManager: ObservableObject {
     /// book_id -> 0...1 while a download is in flight.
     @Published private(set) var progress: [String: Double] = [:]
 
+    /// Allows external download delegates to report progress.
+    func setProgress(_ frac: Double, for bookID: String) {
+        progress[bookID] = frac
+    }
+
     /// Soft cap on local storage; oldest (by lastPlayed) is evicted past this.
     var maxLocalBytes: Int64 = 4 * 1024 * 1024 * 1024  // 4 GB
 
