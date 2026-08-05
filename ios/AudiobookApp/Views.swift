@@ -576,6 +576,7 @@ struct DownloadedView: View {
 
     private var totalBytes: Int64 { downloads.totalBytes }
     private var maxBytes: Int64 { downloads.maxLocalBytes }
+    private var api: APIClient { APIClient(settings: settings) }
 
     var body: some View {
         NavigationStack {
@@ -594,8 +595,17 @@ struct DownloadedView: View {
                     List {
                         Section {
                             ForEach(books) { book in
-                                NavigationLink(value: book) {
-                                    BookRow(book: book)
+                                HStack(spacing: 0) {
+                                    NavigationLink(value: book) {
+                                        BookRowCompact(book: book)
+                                            .environmentObject(settings)
+                                    }
+                                    .buttonStyle(.plain)
+                                    BookRowDownloadControl(
+                                        book: book,
+                                        api: api,
+                                        downloads: DownloadManager.shared,
+                                        voiceID: 0)
                                 }
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) {
