@@ -41,17 +41,14 @@ struct ThemeToggleButton: View {
     }
 }
 
-/// Three tabs: the folder library, downloaded books (offline-only), and the
-/// "Continue listening" shelf.
+/// Single tab: the folder library with integrated "Continue Listening" strip
+/// and offline filter — Audible-style: one coherent browsing surface instead
+/// of three separate tabs.
 struct RootTabView: View {
     var body: some View {
         TabView {
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
-            DownloadedView()
-                .tabItem { Label("Downloaded", systemImage: "arrow.down.circle.fill") }
-            StartedView()
-                .tabItem { Label("Listening", systemImage: "headphones") }
         }
     }
 }
@@ -135,6 +132,9 @@ struct LibraryView: View {
 /// One folder level: its subfolders (with recursive book counts) and the books
 /// directly inside it. The search field queries ALL books globally, regardless
 /// of the current folder.
+///
+/// On the root level only: a "Continue Listening" horizontal strip (Audible-style)
+/// and an All/Downloaded filter toggle.
 struct FolderView: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
@@ -143,24 +143,54 @@ struct FolderView: View {
 
     @State private var subfolders: [LibraryFolder] = []
     @State private var books: [Book] = []
+    @State private var startedBooks: [Book] = []
     @State private var query = ""
     @State private var error: String?
     @State private var loading = false
-    @State private var isOffline = false
+    @State private var showDownloadedOnly = false
     @AppStorage("voiceID") private var voiceID = 0
 
     private var api: APIClient { APIClient(settings: settings) }
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var isRoot: Bool { folder.isEmpty }
 
     var body: some View {
         List {
-            if isOffline {
-                Section {
-                    Label("Offline — showing downloaded books", systemImage: "wifi.slash")
-                        .font(.caption).foregroundStyle(.secondary)
+            // Continue Listening strip — only on root, not searching, not filtered
+            if isRoot, !searching, !showDownloadedOnly, !startedBooks.isEmpty {
+                Section("Continue") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(startedBooks) { book in
+                                NavigationLink(value: book) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                                                  token: settings.token) {
+                                            RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.2))
+                                        }
+                                        .scaledToFill()
+                                        .frame(width: 72, height: 100).clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                        Text(book.title)
+                                            .font(.caption).lineLimit(1)
+                                            .frame(width: 72)
+                                        if let frac = book.fractionComplete {
+                                            ProgressView(value: frac)
+                                                .tint(.blue)
+                                                .frame(width: 72, height: 3)
+                                        }
+                                    }
+                                    .frame(width: 72)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .listRowInsets(EdgeInsets())
                 }
             }
-            if !searching, !subfolders.isEmpty {
+            if !searching, !showDownloadedOnly, !subfolders.isEmpty {
                 Section("Folders") {
                     ForEach(subfolders) { f in
                         NavigationLink(value: f) {
@@ -176,15 +206,17 @@ struct FolderView: View {
                 }
             }
             if !books.isEmpty {
-                Section(searching ? "Results" : (isOffline ? "Downloaded" : "Books")) {
+                Section(showDownloadedOnly ? "Downloaded" : (searching ? "Results" : "Books")) {
                     ForEach(books) { book in
-                        BookRow(book: book, showFolder: searching)
+                        BookRow(book: book, showFolder: searching || showDownloadedOnly)
                             .environmentObject(settings)
                     }
                 }
             }
             if !loading, subfolders.isEmpty, books.isEmpty {
-                Text(searching ? "No matches" : (isOffline ? "No downloaded books" : "Empty folder"))
+                Text(showDownloadedOnly ? "No downloads yet"
+                     : searching ? "No matches"
+                     : "Empty folder")
                     .foregroundStyle(.secondary)
             }
         }
@@ -198,8 +230,17 @@ struct FolderView: View {
             PlayerView(book: book).environmentObject(settings)
         }
         .toolbar {
+            if isRoot {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Picker("Filter", selection: $showDownloadedOnly) {
+                        Text("All").tag(false)
+                        Text("Downloaded").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
-            if folder.isEmpty {
+            if isRoot {
                 ToolbarItem(placement: .navigationBarTrailing) { VoiceMenu() }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
@@ -207,28 +248,36 @@ struct FolderView: View {
             }
         }
         .refreshable { await load() }
-        .task(id: "\(query)|\(voiceID)") {
-            await load()
-            // Auto-poll every 30s so cacheStatus updates while server generates.
-            // wrap in Task to allow `try await` inside the non-throwing .task closure.
-            Task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 30_000_000_000)
-                    if !Task.isCancelled { await load() }
-                }
-            }
-        }
-        .overlay { if let e = error, !isOffline { Text(e).foregroundStyle(.red).padding() } }
+        .task(id: "\(query)|\(voiceID)|\(showDownloadedOnly)") { await load() }
+        .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
     }
 
     private func load() async {
         loading = true
         defer { loading = false }
         let q = query.trimmingCharacters(in: .whitespaces)
-        if !q.isEmpty {                       // debounce search-as-you-type
+        if !q.isEmpty {
             try? await Task.sleep(nanoseconds: 250_000_000)
             if Task.isCancelled { return }
         }
+
+        // Offline-only: show downloaded books
+        if showDownloadedOnly {
+            var offline = downloads.offlineBooks()
+            if !q.isEmpty {
+                let lq = q.lowercased()
+                offline = offline.filter {
+                    $0.title.lowercased().contains(lq) ||
+                    $0.author.lowercased().contains(lq)
+                }
+            }
+            subfolders = []
+            books = offline
+            error = nil
+            return
+        }
+
+        // Online: load from server
         do {
             let r = try await api.browse(folder: folder, q: q.isEmpty ? nil : q,
                                          voiceID: voiceID == 0 ? nil : voiceID)
@@ -238,29 +287,24 @@ struct FolderView: View {
                let first = r.voices.first {
                 UserDefaults.standard.set(first.id, forKey: "voiceID")
             }
-            isOffline = false
-            error = nil
-        } catch let caught {
-            // Offline fallback: show downloaded books from local manifest
-            let offline = downloads.offlineBooks()
-            if !offline.isEmpty && folder.isEmpty {
-                let filtered: [Book]
-                if q.isEmpty {
-                    filtered = offline
-                } else {
-                    let lq = q.lowercased()
-                    filtered = offline.filter {
-                        $0.title.lowercased().contains(lq) ||
-                        $0.author.lowercased().contains(lq)
+            // Load started books for the Continue strip (root only, in background)
+            if isRoot {
+                Task {
+                    if let sb = try? await api.started(voiceID: voiceID == 0 ? nil : voiceID) {
+                        startedBooks = sb
                     }
                 }
+            }
+            error = nil
+        } catch {
+            // Offline fallback: if server unreachable, show downloads automatically
+            let offline = downloads.offlineBooks()
+            if !offline.isEmpty && isRoot {
                 subfolders = []
-                books = filtered
-                isOffline = true
+                books = offline
                 self.error = nil
             } else {
-                isOffline = false
-                self.error = "Load failed: \(caught)"
+                self.error = "Cannot reach server"
             }
         }
     }
@@ -304,349 +348,50 @@ struct VoiceMenu: View {
     }
 }
 
-/// Shared row used by the library and the "Listening" shelf: cover, title,
-/// status, offline badge, and a progress bar once the book is started.
-/// Library row with two small action icons on the right side:
-/// ▶️ Play — opens the player (HLS stream)
-/// ⬇️ Download — starts server conversion, waits, then downloads M4B
+/// Shared row used by the library: cover, title, progress bar. Tapping opens
+/// the player — no download button, no status badge. Pure navigation.
+/// Offline books get a subtle green checkmark.
 struct BookRow: View {
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var downloads = DownloadManager.shared
-    @AppStorage("voiceID") private var voiceID = 0
     let book: Book
     var showFolder = false
 
-    @State private var waiting: Bool = false
-    @State private var lastError: String?
-
-    private var api: APIClient { APIClient(settings: settings) }
-    private var isDownloaded: Bool { downloads.isDownloaded(book.bookId) }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            // Cover + title → opens player (HLS stream)
-            NavigationLink(value: book) {
-                HStack(spacing: 12) {
-                    AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
-                              token: settings.token) { Color.gray.opacity(0.2) }
-                        .scaledToFill()
-                        .frame(width: 44, height: 60).clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(book.title).font(.headline).lineLimit(2)
-                        Text(book.author).font(.subheadline).foregroundStyle(.secondary)
-                        statusBadge
-                        if let lastError {
-                            Label(lastError, systemImage: "exclamationmark.triangle")
-                                .font(.caption2).foregroundStyle(.red).lineLimit(2)
-                        }
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            // Right: download state
-            if isDownloaded {
-                Button(role: .destructive) {
-                    downloads.delete(book.bookId)
-                } label: {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.borderless)
-                .tint(.green)
-            } else {
-                Button {
-                    startDownload()
-                } label: {
-                    Image(systemName: waiting
-                           ? "arrow.down.circle.dotted"
-                           : "arrow.down.circle")
-                        .font(.title3)
-                }
-                .buttonStyle(.borderless)
-                .tint(.orange)
-                .disabled(waiting)
-            }
-        }
-        .listRowSeparator(.hidden)
-    }
-
-    @ViewBuilder private var statusBadge: some View {
-        let (label, color): (String, Color) = {
-            switch book.cacheStatus {
-            case "ready":   return ("Bereit", .green)
-            case "partial": return ("Wird erstellt…", .orange)
-            default:        return ("", .secondary)
-            }
-        }()
-        if !label.isEmpty {
-            HStack(spacing: 6) {
-                Text(label).font(.caption2).foregroundStyle(color)
-                if book.positionS > 1 {
-                    Text("• fortsetzen").font(.caption2).foregroundStyle(.secondary)
-                }
-                if showFolder, !book.folder.isEmpty {
-                    Text("• \(book.folder)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-        }
-    }
-
-    // MARK: - Actions
-
-    private func startDownload() {
-        guard voiceID != 0 else {
-            lastError = "Bitte Stimme wählen"
-            return
-        }
-        waiting = true
-        lastError = nil
-        Task {
-            defer { waiting = false }
-            do {
-                let resp = try await api.convert(
-                    bookID: book.bookId, voiceID: voiceID, fmt: "m4b")
-                // Poll until server finishes generating the audio file.
-                for _ in 0..<120 where !Task.isCancelled {
-                    let s = try await api.status(jobID: resp.jobId)
-                    if s.hasM4b {
-                        downloads.download(book: book, jobID: resp.jobId, api: api)
-                        return
-                    }
-                    if s.state == "failed" {
-                        lastError = "Server-Fehler"
-                        return
-                    }
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
-                }
-            } catch {
-                lastError = "Netzwerkfehler"
-            }
-        }
-    }
-}
-
-/// "Continue listening": books with a saved position, newest first.
-struct StartedView: View {
-    @EnvironmentObject var settings: AppSettings
-    @ObservedObject private var downloads = DownloadManager.shared
-    @AppStorage("voiceID") private var voiceID = 0
-    @State private var books: [Book] = []
-    @State private var error: String?
-    @State private var bookToDelete: Book?
-    @State private var isOffline = false
-
     private var api: APIClient { APIClient(settings: settings) }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if books.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "headphones").font(.largeTitle).foregroundStyle(.secondary)
-                        Text("Nothing started yet").font(.headline)
-                        Text("Books you begin will appear here.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                } else {
-                    List {
-                        if isOffline {
-                            Section {
-                                Label("Offline — showing downloaded books", systemImage: "wifi.slash")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
+        NavigationLink(value: book) {
+            HStack(spacing: 12) {
+                AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                          token: settings.token) { Color.gray.opacity(0.2) }
+                    .scaledToFill()
+                    .frame(width: 44, height: 60).clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(book.title).font(.headline).lineLimit(2)
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        if let frac = book.fractionComplete {
+                            ProgressView(value: frac)
+                                .tint(.blue)
+                                .frame(height: 4)
+                                .frame(maxWidth: 60)
                         }
-                        ForEach(books) { book in
-                            if book.isUnavailable {
-                                // Ghost entry: PDF not found on server — show greyed out
-                                BookRow(book: book)
-                                    .opacity(0.45)
-                                    .overlay(alignment: .bottomLeading) {
-                                        Text("PDF nicht gefunden")
-                                            .font(.caption2)
-                                            .foregroundStyle(.orange)
-                                            .padding(.leading, 4)
-                                    }
-                                    .swipeActions(edge: .trailing) {
-                                        Button(role: .destructive) {
-                                            bookToDelete = book
-                                        } label: { Label("Entfernen", systemImage: "trash") }
-                                    }
-                            } else {
-                                BookRow(book: book)
-                                    .swipeActions(edge: .trailing) {
-                                        Button(role: .destructive) {
-                                            bookToDelete = book
-                                        } label: { Label("Entfernen", systemImage: "trash") }
-                                    }
-                            }
+                        if showFolder, !book.folder.isEmpty {
+                            Text(book.folder).font(.caption2)
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        if downloads.isDownloaded(book.bookId) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.caption2).foregroundStyle(.green)
                         }
                     }
                 }
             }
-            .navigationTitle("Listening")
-            .navigationDestination(for: Book.self) { book in
-                PlayerView(book: book).environmentObject(settings)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
-                ToolbarItem(placement: .navigationBarTrailing) { VoiceMenu() }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
-                }
-            }
-            .refreshable { await load() }
-            .task(id: voiceID) { await load() }
-            .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
-            .confirmationDialog(
-                "\"\(bookToDelete?.title ?? "")\" wirklich aus der Liste entfernen?",
-                isPresented: Binding(get: { bookToDelete != nil },
-                                     set: { if !$0 { bookToDelete = nil } }),
-                titleVisibility: .visible
-            ) {
-                Button("Entfernen", role: .destructive) {
-                    if let b = bookToDelete { Task { await remove(b) } }
-                }
-                Button("Abbrechen", role: .cancel) {}
-            }
+            .contentShape(Rectangle())
         }
-    }
-
-    private func load() async {
-        do {
-            let v = UserDefaults.standard.integer(forKey: "voiceID")
-            var serverBooks = try await api.started(voiceID: v == 0 ? nil : v)
-            error = nil
-            // Resync any locally stored progress that the server doesn't know about.
-            // This recovers from a server-side SQLite reset or accidental delete.
-            let serverIDs = Set(serverBooks.map { $0.bookId })
-            let local = LocalProgressStore.shared.load()
-            var resynced = false
-            for (bookID, entry) in local where !serverIDs.contains(bookID) {
-                guard entry.positionS > 1 else { continue }
-                try? await api.putProgress(bookID: bookID,
-                                           positionS: entry.positionS,
-                                           durationS: entry.durationS,
-                                           title: entry.title,
-                                           author: entry.author)
-                resynced = true
-            }
-            if resynced {
-                serverBooks = try await api.started(voiceID: v == 0 ? nil : v)
-            }
-            books = serverBooks
-            isOffline = false
-        } catch let caught {
-            // Offline fallback: show downloaded books with resumed progress
-            let offline = downloads.offlineBooks()
-            if !offline.isEmpty {
-                books = offline
-                isOffline = true
-                self.error = nil
-            } else {
-                isOffline = false
-                self.error = "Load failed: \(caught)"
-            }
-        }
-    }
-
-    /// Remove from "Listening": forget the server position, local backup, and
-    /// any offline download. Called only after the user confirms the dialog.
-    private func remove(_ book: Book) async {
-        books.removeAll { $0.id == book.id }
-        bookToDelete = nil
-        LocalProgressStore.shared.remove(book.bookId)
-        DownloadManager.shared.delete(book.bookId)
-        try? await api.deleteProgress(bookID: book.bookId)
-    }
-}
-
-/// "Downloaded" shelf: every book that has been saved for offline playback,
-/// served straight from `DownloadManager.shared.offlineBooks()`. This view is
-/// deliberately network-free — it works even with the server unreachable and
-/// the Mac powered off, so it's the canonical entry point for offline audio.
-struct DownloadedView: View {
-    @EnvironmentObject var settings: AppSettings
-    @ObservedObject private var downloads = DownloadManager.shared
-    @State private var books: [Book] = []
-
-    private var totalBytes: Int64 { downloads.totalBytes }
-    private var maxBytes: Int64 { downloads.maxLocalBytes }
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if books.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.largeTitle).foregroundStyle(.secondary)
-                        Text("No downloads yet").font(.headline)
-                        Text("Tap “Download for offline” on a converted book to listen without the server.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    }
-                } else {
-                    List {
-                        Section {
-                            ForEach(books) { book in
-                                BookRow(book: book)
-                                    .environmentObject(settings)
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        DownloadManager.shared.delete(book.bookId)
-                                        books = DownloadManager.shared.offlineBooks()
-                                    } label: {
-                                        Label("Delete download", systemImage: "trash")
-                                    }
-                                }
-                            }
-                        } header: {
-                            Text("\(books.count) book\(books.count == 1 ? "" : "s") downloaded")
-                        }
-                        Section {
-                            HStack {
-                                Text("\(formatBytes(totalBytes)) of \(formatBytes(maxBytes)) used")
-                                Spacer()
-                                ProgressView(value: maxBytes > 0
-                                             ? Double(totalBytes) / Double(maxBytes)
-                                             : 0)
-                                    .frame(width: 100)
-                            }
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Downloaded")
-            .navigationDestination(for: Book.self) { book in
-                PlayerView(book: book).environmentObject(settings)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
-                }
-            }
-            .refreshable { reload() }
-            .task { reload() }
-        }
-    }
-
-    /// Read straight from disk. No `APIClient` call — the view must work
-    /// fully offline.
-    private func reload() {
-        books = DownloadManager.shared.offlineBooks()
-    }
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        let mb = Double(bytes) / (1024 * 1024)
-        if mb >= 1024 {
-            return String(format: "%.2f GB", mb / 1024)
-        }
-        return String(format: "%.0f MB", mb)
+        .buttonStyle(.plain)
     }
 }
 
@@ -685,12 +430,45 @@ struct PlayerView: View {
 
             if let m = vm.model {
                 ScrubberView(vm: m)
-                if m.offline {
-                    Label("Offline", systemImage: "arrow.down.circle.fill")
-                        .font(.caption2).foregroundStyle(.green)
-                } else if let st = m.status, st.state == "processing" {
-                    Text("Generating \(st.doneChunks)/\(st.totalChunks)…")
-                        .font(.caption2).foregroundStyle(.secondary)
+                // Error
+                if let err = vm.model?.lastError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                // Status + download button — every state tells the user what's happening.
+                HStack(spacing: 16) {
+                    playerStatusLabel(m: m)
+                    Spacer()
+                    // Download / delete button — three distinct visual states.
+                    if downloads.isDownloaded(book.bookId) {
+                        Button(role: .destructive) {
+                            downloads.delete(book.bookId)
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3).foregroundStyle(.green)
+                                .accessibilityLabel("Downloaded — tap to delete")
+                        }
+                    } else if let pct = downloads.progress[book.bookId], pct > 0, pct < 1 {
+                        // Actively downloading: show the percentage ring
+                        ProgressView(value: pct)
+                            .progressViewStyle(.circular)
+                            .frame(width: 26, height: 26)
+                            .accessibilityLabel("\(Int(pct * 100)) percent downloaded")
+                    } else if downloads.progress[book.bookId] != nil {
+                        // Just finished — show the green check briefly before the
+                        // manifest reload swaps in the green-checkmark button.
+                        ProgressView()
+                            .frame(width: 24, height: 24)
+                    } else {
+                        Button {
+                            vm.model?.downloadForOffline()
+                        } label: {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.title3)
+                        }
+                        .disabled(vm.model?.jobID == nil || !(vm.model?.status?.hasM4b ?? false))
+                        .accessibilityLabel("Download for offline — enabled once audio is ready")
+                    }
                 }
             }
 
@@ -714,6 +492,10 @@ struct PlayerView: View {
                     Text("Chapters").tag(0)
                     Text("Text").tag(1)
                 }.pickerStyle(.segmented)
+                // Switch to text tab the moment a transcript arrives (offline or online).
+                .onChange(of: vm.model?.transcript.count ?? 0) { newCount in
+                    if newCount > 0 { tab = 1 }
+                }
             }
 
             if tab == 1 && hasText, let m = vm.model {
@@ -747,6 +529,40 @@ struct PlayerView: View {
     private var tint: Color {
         scheme == .dark ? .blue : Color(red: 0.04, green: 0.28, blue: 0.62)
     }
+
+    /// Tells the user what the player is currently doing. Six explicit states —
+/// no more guessing "is the thing playing, loading, broken, or downloading?".
+@ViewBuilder private func playerStatusLabel(m: PlayerViewModel) -> some View {
+    // 1. Offline & verified playable
+    if m.offline {
+        Label("Offline", systemImage: "arrow.down.circle.fill")
+            .font(.caption2).foregroundStyle(.green)
+    }
+    // 2. Player attached but still buffering (HLS first segment)
+    else if m.isAttached, !m.isPlaying, m.currentTime < 1,
+            let st = m.status, !st.playable {
+        Label("Buffering…", systemImage: "antenna.radiowaves.left.and.right")
+            .font(.caption2).foregroundStyle(.secondary)
+    }
+    // 3. Server is actively generating audio chunks
+    else if let st = m.status, st.state == "processing" {
+        Label("Generating \(st.doneChunks)/\(st.totalChunks)",
+              systemImage: "hourglass")
+            .font(.caption2).foregroundStyle(.secondary)
+    }
+    // 4. Waiting for first chunk (server hasn't started, or no playable stream yet)
+    else if !m.isAttached, let st = m.status, st.state == "queued" {
+        Label("Queued on server", systemImage: "hourglass")
+            .font(.caption2).foregroundStyle(.secondary)
+    }
+    // 5. Job done but HLS stream isn't playable yet (rare)
+    else if !m.isAttached, let st = m.status, st.state == "done", !st.playable {
+        Label("Server audio ready, loading…",
+              systemImage: "arrow.triangle.2.circlepath")
+            .font(.caption2).foregroundStyle(.secondary)
+    }
+    // 6. Player attached and either playing or paused mid-track — no label needed
+}
 
     @ViewBuilder private func chapterList(_ m: PlayerViewModel) -> some View {
         let current = m.currentChapterIndex()

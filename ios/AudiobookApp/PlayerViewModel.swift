@@ -18,6 +18,10 @@ final class PlayerViewModel: ObservableObject {
     /// The book is playing from a local offline download rather than streaming.
     @Published private(set) var offline = false
     @Published private(set) var jobID: Int?
+    /// True when an AVPlayer is attached and ready to play (offline or HLS).
+    var isAttached: Bool { player != nil }
+    /// Human-readable error surfaced to the UI (e.g. "Cannot reach server").
+    @Published var lastError: String?
 
     let book: Book
     private let api: APIClient
@@ -39,10 +43,12 @@ final class PlayerViewModel: ObservableObject {
 
     func start() {
         configureAudioSession()
+        lastError = nil
         Task { await fetchCover() }
-        // Offline-first: if the finished M4B is on disk AND valid, play locally.
-        if downloads.isDownloaded(book.bookId),
-           FileManager.default.fileExists(atPath: downloads.fileURL(book.bookId).path) {
+        // Offline-first: only treat as offline if the file is on disk AND non-empty.
+        // isDownloaded() already enforces this, but we check explicitly here too so
+        // a corrupt manifest entry can never send the player into a silent state.
+        if downloads.isDownloaded(book.bookId) {
             offline = true
             downloads.markPlayed(book.bookId)
             attachPlayer(item: AVPlayerItem(url: downloads.fileURL(book.bookId)))
@@ -50,14 +56,12 @@ final class PlayerViewModel: ObservableObject {
             Task { await restorePosition() }
             return
         }
-        // Clear stale download entries with missing files.
-        if downloads.isDownloaded(book.bookId) {
+        // Stale manifest entry (file missing or 0-byte) — clear it so the UI
+        // stops showing the green "offline" checkmark for this book.
+        if downloadedHasManifestEntryOnly(book.bookId) {
             downloads.delete(book.bookId)
         }
         Task {
-            // Kick off (or attach to) the conversion. Don't attach the player
-            // until the stream is playable — an empty playlist 404s and AVPlayer
-            // won't retry, which looked like "nothing happens".
             do {
                 let voiceID = UserDefaults.standard.integer(forKey: "voiceID")
                 let conv = try await api.convert(bookID: book.bookId, voiceID: voiceID)
@@ -66,16 +70,32 @@ final class PlayerViewModel: ObservableObject {
                 self.streamPath = conv.streamUrl
                 if conv.status.playable { await attachStream() }
                 await refreshTranscript(force: true)
-                pollStatus()   // attaches as soon as the first segment exists
-            } catch { print("convert failed:", error) }
+                pollStatus()
+            } catch let e as APIError {
+                switch e {
+                case .http(401): lastError = "Authentication failed"
+                case .http(404): lastError = "Book not found on server"
+                default: lastError = "Server error"
+                }
+            } catch {
+                lastError = "Cannot reach server"
+            }
         }
+    }
+
+    /// True when a download manifest entry exists but the file is missing or 0-byte.
+    /// Means the previous download attempt didn't finish — manifest needs cleanup.
+    private func downloadedHasManifestEntryOnly(_ bookID: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: downloads.fileURL(bookID).path)
+              == false else { return false }
+        return downloads.totalBytes == 0 || downloads.downloaded[bookID] != nil
     }
 
     /// Fetch the synced transcript (online). Throttled, and only replaces the
     /// current one when it grew, to avoid flicker while generation continues.
     private func refreshTranscript(force: Bool = false) async {
         guard let jid = jobID else { return }
-        if !force, Date().timeIntervalSince(lastTranscriptFetch) < 15 { return }
+        if !force, Date().timeIntervalSince(lastTranscriptFetch) < 8 { return }
         lastTranscriptFetch = Date()
         if let t = try? await api.transcript(jobID: jid), t.count >= transcript.count {
             transcript = t
@@ -198,7 +218,7 @@ final class PlayerViewModel: ObservableObject {
                         break
                     }
                 }
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
     }

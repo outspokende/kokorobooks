@@ -32,7 +32,18 @@ final class DownloadManager: ObservableObject {
         var lastPlayed: Date
     }
 
-    private init() { load() }
+    private init() { load(); cleanupStaleEntries() }
+
+    /// Remove any manifest entries whose on-disk file is missing or not a
+    /// valid audio file (0-byte stubs, HTTP-404 bodies). Runs once at startup
+    /// so stale entries from the old broken downloads are cleared automatically.
+    private func cleanupStaleEntries() {
+        let stale = downloaded.keys.filter { !isDownloaded($0) }
+        for id in stale { delete(id) }
+        if !stale.isEmpty {
+            print("DownloadManager: cleaned \(stale.count) stale entries")
+        }
+    }
 
     // MARK: - Paths
 
@@ -54,16 +65,48 @@ final class DownloadManager: ObservableObject {
         return try? JSONDecoder().decode([TranscriptLine].self, from: data)
     }
 
+    /// True when a valid audio file exists on disk (M4B or MP3 magic bytes).
+    /// Rejects 0-byte stubs AND HTTP-error bodies (404 JSON etc.) from ever
+    /// appearing as "downloaded" in the UI.
     func isDownloaded(_ bookID: String) -> Bool {
-        downloaded[bookID] != nil && FileManager.default.fileExists(atPath: fileURL(bookID).path)
+        guard downloaded[bookID] != nil else { return false }
+        let url = fileURL(bookID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        // Reject 0-byte and 404-body stubs before they can mislead the UI.
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              data.count >= 12 else { return false }
+        return isValidAudioHeader(data)
+    }
+
+    /// Returns true if the first bytes of `data` match a known audio format.
+    /// M4B: bytes 4-7 = "ftyp" (after 4-byte atom size). MP3: 0xFF 0xEB, or
+    /// ID3 tag at offset 0 ("ID3"). All other patterns are invalid.
+    private func isValidAudioHeader(_ data: Data) -> Bool {
+        // M4B: "....ftyp" — atom header is size(4) + "ftyp"(4) at offset 0
+        if data.count >= 12 {
+            let m4b = data.subdata(in: 4..<8)
+            if m4b == Data([0x66, 0x74, 0x79, 0x70]) { return true } // "ftyp"
+        }
+        // MP3 with ID3v2 tag: starts with "ID3"
+        if data.count >= 3 {
+            let h = data.prefix(3)
+            if h == Data([0x49, 0x44, 0x33]) { return true }           // "ID3"
+        }
+        // MP3 without ID3: first frame sync word 0xFFF? or 0xFFE?
+        if data.count >= 2 {
+            let w = UInt16(data[0]) << 8 | UInt16(data[1])
+            if w & 0xFFE0 == 0xFFE0 { return true }
+        }
+        return false
     }
 
     var totalBytes: Int64 { downloaded.values.reduce(0) { $0 + $1.sizeBytes } }
 
     /// Synthesize Book objects from the local manifest for offline display.
+    /// Skips entries whose file is missing or not a valid audio file.
     func offlineBooks() -> [Book] {
         downloaded.values.compactMap { dl -> Book? in
-            guard FileManager.default.fileExists(atPath: fileURL(dl.bookID).path) else { return nil }
+            guard isDownloaded(dl.bookID) else { return nil }
             let local = LocalProgressStore.shared.load()[dl.bookID]
             return Book(
                 bookId: dl.bookID,
@@ -257,16 +300,28 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         if e > 0 { onProgress(Double(w) / Double(e)) }
     }
 
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
+    func urlSession(_ s: URLSession,
+                    downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
+        // Only accept 2xx responses. HTTP 404/500 from a still-generating job
+        // must not create a stub file that the manifest later reports as "ready".
+        guard let http = downloadTask.response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            print("DownloadDelegate: non-2xx \(downloadTask.response?.description ?? "?") for \(bookID) -- ignoring")
+            onFinish(nil)
+            return
+        }
         // Move synchronously out of the temp location before the closure returns.
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".m4b")
         try? FileManager.default.moveItem(at: location, to: tmp)
         onFinish(tmp)
+        s.finishTasksAndInvalidate()
     }
 
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError err: Error?) {
+    func urlSession(_ s: URLSession,
+                    task: URLSessionTask,
+                    didCompleteWithError err: Error?) {
         if err != nil { onFinish(nil) }
     }
 }
