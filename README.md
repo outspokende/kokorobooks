@@ -1,114 +1,139 @@
+<div align="center">
+
 # KokoroBooks
 
-Headless server + iOS app for on-demand audiobook streaming. A Mac (Apple
-Silicon) turns library PDFs into audiobooks with Kokoro 82M through MLX and
-streams them to an iPhone **while they are still being generated** — so playback
-starts within seconds instead of after a full conversion.
+### Your audiobook starts playing while Kokoro is still making it.
 
-This is a separate project; the original desktop app
-(`~/audiobookPocketTTS`) is untouched. Reusable pipeline modules
-(`pdfproc`, `audio`, `worker`, `supervisor`, `db`, engine) were copied and
-extended here.
+A self-hosted audiobook server for your own PDF library, with an iOS player that can stream generated audio while it is being created.
 
-## Voices
+[![Platform](https://img.shields.io/badge/Apple_Silicon-MLX-13b8a6?style=for-the-badge)](#requirements)
+[![Backend](https://img.shields.io/badge/Backend-Python-3776ab?style=for-the-badge)](#how-it-works)
+[![iOS](https://img.shields.io/badge/Client-iOS-111827?style=for-the-badge)](#generate-and-build-the-ios-app)
+[![Status](https://img.shields.io/badge/Status-Prototype-f59e0b?style=for-the-badge)](#project-status)
 
-The iOS app offers five built-in American male presets: Michael, Adam, Eric,
-Liam, and Onyx. KokoroBooks does not clone or upload voices.
+[Get started](#get-started) · [How it works](#how-it-works) · [API](#api-overview) · [Status](#project-status)
 
-## Why streaming works so well here
-Kokoro generates much faster than realtime on Apple Silicon. Once the first
-HLS segment exists (~1–2 s of wall time), the generator stays far ahead of the
-listener with a **single worker** — no parallel pool needed.
+</div>
 
-## Architecture
+---
 
-```
-PDF (library folder) ──hash──> pre-clean cache (chunks/chapters/cover/meta)
-        │  POST /api/convert
-        ▼
-   Supervisor ── 1 worker ──> chunk WAVs (in order)
-        │                          │ feed PCM in order
-        ▼                          ▼
-   ffmpeg HLS muxer ──> growing index.m3u8 + fMP4/AAC segments ──> iPhone AVPlayer
-        └─ on finish: #EXT-X-ENDLIST + final M4B (offline download)
-   listening position  <── PUT/GET /api/library/{id}/progress ──> all devices
-   audio cache (LRU, AUDIO_CACHE_MAX_GB) evicts least-recently-played books
-```
+## What is KokoroBooks?
 
-- **`backend/app/library.py`** — scan the PDF folder, content-hash each book.
-- **`backend/app/pdfproc` `prepare_or_load`** — pre-clean cache keyed by hash.
-- **`backend/app/hls.py`** — one long-running ffmpeg HLS muxer fed PCM in order.
-- **`backend/app/supervisor.py`** — single worker + HLS feed + nightly sleep
-  window + M4B assembly + cache registration.
-- **`backend/app/cache.py`** — size-bounded LRU eviction.
-- **`backend/app/server.py`** — bearer-auth REST API.
-- **`backend/app/serve.py`** — `python -m app.serve` headless entry.
+KokoroBooks turns PDFs in a folder on your Apple Silicon Mac into spoken audio with Kokoro 82M. The iPhone app can start playback from the growing audio stream before the full book has finished generating. When generation completes, the server assembles an M4B for offline listening.
 
-## Run the server
+The project is designed for a personal library on a trusted home network or Tailscale network. Your PDFs remain on your server. KokoroBooks does not clone voices.
+
+> **Prototype:** the backend has working PDF preparation, Kokoro synthesis, HLS streaming, authentication, progress sync and cache components. The iOS app is an early implementation. See [Project status](#project-status) for the limits of validation.
+
+## Why stream while generating?
+
+Traditional conversion makes you wait for the whole book. KokoroBooks generates speech in chunks and feeds them into an HLS stream. The iPhone can begin listening as soon as playable segments exist, while the server continues working through the book.
+
+## Features
+
+- Scan a server-side PDF library and identify books by content hash.
+- Extract and prepare text before synthesis, with chapter-aware chunks and a cover image.
+- Generate audio with Kokoro 82M through MLX on Apple Silicon.
+- Stream generated audio to iOS using HLS while synthesis continues.
+- Resume listening position across devices.
+- Cache completed audio with size-bounded least-recently-played eviction.
+- Assemble a final M4B for offline download when a job completes.
+- Protect API operations with a bearer token.
+
+## Requirements
+
+- macOS on Apple Silicon. MLX requires Apple Silicon.
+- Python 3.11.
+- FFmpeg available to the backend for HLS muxing and M4B assembly.
+- An iPhone running a compatible iOS version and reachable server.
+- Network access to install dependencies and retrieve the model on first setup.
+
+## Get started
+
+### 1. Install and run the backend
 
 ```bash
-cd backend
-python3.11 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/outspokende/kokorobooks.git
+cd kokorobooks/backend
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-mkdir -p ~/Audiobooks/PDFs        # drop your PDFs here
-python -m app.serve               # prints the API token on startup
+mkdir -p ~/Audiobooks/PDFs
+python -m app.serve
 ```
 
-Key env vars: `KBS_HOST`, `KBS_PORT` (8724), `KBS_LIBRARY_DIR`,
-`KBS_AUDIO_CACHE_GB` (20), `KBS_SLEEP_START`/`KBS_SLEEP_END` (23:55/04:00).
+Put PDFs you have permission to process in `~/Audiobooks/PDFs`. On startup, the server prints an API bearer token. Keep it private.
 
-### Tests
+### 2. Generate and build the iOS app
+
+Install XcodeGen, then generate the Xcode project:
+
 ```bash
-cd backend
-.venv/bin/pip install pytest          # once
-.venv/bin/python -m pytest            # library / hls / progress / cache / preclean / server
-```
-The HLS tests need `ffmpeg` on PATH (they skip if absent).
-
-### Run as a service (launchd)
-Edit paths in `deploy/com.kokorobooks.plist`, then:
-```bash
-cp deploy/com.kokorobooks.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kokorobooks.plist
+brew install xcodegen
+cd ../ios
+xcodegen generate
+open KokoroBooks.xcodeproj
 ```
 
-The agent uses `RunAtLoad` + `KeepAlive`, so crashes are restarted
-automatically. `ThrottleInterval=10` prevents a tight crash loop. The existing
-Mac → Home Assistant monitor (`~/.local/bin/mac_ha_push.py`) checks `/health`
-every 60 seconds, performs one `launchctl kickstart -k` self-heal attempt when
-HTTP is unresponsive, and publishes:
+Choose your Apple Developer signing team in Xcode, build, and run on your iPhone. In the app settings, enter the server URL and the bearer token printed by the backend. See [`ios/README.md`](ios/README.md) for client setup and current limitations.
 
-- `binary_sensor.mac_audiobook_server` — connectivity
-- `sensor.mac_audiobook_server` — idle/processing/queued/paused plus job
-  progress, queue length, ready books, cache size, ETA, and restart-attempt flag
+### 3. Connect securely
 
-## Remote access & security
-Run the Mac and iPhone on the same **Tailscale** tailnet and reach the server at
-its MagicDNS name. Every API call needs the bearer token. **Do not** port-forward
-this to the open internet.
+Use the Mac and iPhone on the same trusted LAN or Tailscale tailnet. KokoroBooks is intended for private network access. Do not expose the API to the open internet or configure router port forwarding.
 
-## iOS app
-See [`ios/README.md`](ios/README.md). SwiftUI + AVPlayer, browse → convert →
-stream-while-generating, chapter seek, cross-device resume.
+## How it works
 
-## API
+```text
+PDF library
+    │
+    ├── content hash and prepared-text cache
+    ▼
+Supervisor ──> one Kokoro / MLX worker ──> ordered audio chunks
+    │                                      │
+    ├── FFmpeg HLS muxer <─────────────────┘
+    │       └── growing playlist and segments ──> iOS AVPlayer
+    │
+    └── on completion: final M4B + cache registration
+```
+
+The server API uses bearer authentication. The HLS stream is consumed by the iOS client. Listening progress is stored per book so playback can resume later.
+
+## API overview
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/library` | list books + cached status |
-| GET | `/api/library/{book_id}/cover` | cover image |
-| POST | `/api/library/{book_id}/prepare` | pre-clean only |
-| POST | `/api/convert` | start/attach conversion → stream URL |
-| GET | `/api/jobs/{id}/status` | progress + playable flag |
-| GET | `/api/monitoring` | authenticated compact service/job status |
-| GET | `/api/stream/{id}/index.m3u8` | growing HLS playlist |
-| GET | `/api/stream/{id}/{seg}` | init.mp4 / seg_*.m4s |
-| GET | `/api/jobs/{id}/chapters` | chapter list + start times |
-| GET | `/api/jobs/{id}/audio` | final M4B (offline download) |
-| GET/PUT | `/api/library/{book_id}/progress` | cross-device position |
-| GET/POST/PATCH/DELETE | `/api/voices…` | voice management |
+| `GET` | `/api/library` | List books and cached status |
+| `GET` | `/api/library/{book_id}/cover` | Get a book cover |
+| `POST` | `/api/library/{book_id}/prepare` | Prepare text without starting synthesis |
+| `POST` | `/api/convert` | Start or attach to conversion |
+| `GET` | `/api/jobs/{id}/status` | Read job and playback status |
+| `GET` | `/api/jobs/{id}/chapters` | Get chapter timing |
+| `GET` | `/api/jobs/{id}/audio` | Download completed M4B |
+| `GET` | `/api/stream/{id}/index.m3u8` | Read the growing HLS playlist |
+| `GET` | `/api/monitoring` | Read authenticated service status |
+| `GET` / `PUT` | `/api/library/{book_id}/progress` | Read or update listening position |
 
-## Status
-Backend M0–M2 + cache + progress implemented and smoke-tested (HLS muxing,
-auth, LRU eviction, progress LWW). End-to-end TTS reuses the proven
-worker/supervisor path. iOS is a compilable starter, not yet a full Xcode
-project (offline download is the main TODO).
+All API calls require the configured bearer token. See [`backend/`](backend) for implementation details.
+
+## Project status
+
+KokoroBooks is an experimental personal project, not a polished consumer app. Backend pieces for PDF preparation, streaming, progress, authentication and cache behavior have been exercised individually. The iOS client is an early implementation and requires Xcode configuration for your environment.
+
+Before relying on it for a full library, verify the complete flow with your own non-sensitive sample PDF and review the generated text and audio. The project has not been validated as a production-grade or internet-facing service.
+
+## Privacy and rights
+
+The server processes PDFs from its configured local library. Do not put private books, generated audio, personal library data, API tokens or server configuration in issues or pull requests. Process only material you have permission to use. This project does not bypass DRM.
+
+KokoroBooks uses Kokoro 82M through MLX. Review the terms for Kokoro, MLX Audio, PyMuPDF and other dependencies before redistribution or commercial use. See the [Kokoro model card](https://huggingface.co/mlx-community/Kokoro-82M-bf16) and the [PyMuPDF license information](https://pymupdf.io/licensing).
+
+## Repository map
+
+- [`backend/`](backend) — Python API, PDF processing, audio generation, streaming and cache.
+- [`ios/`](ios) — SwiftUI client and playback.
+- [`deploy/`](deploy) — launchd service template. Adjust paths for your own Mac before use.
+- [`SIMPLIFICATION.md`](SIMPLIFICATION.md) — design notes and scope decisions.
+
+## Contributing
+
+Bug reports and focused improvements are welcome. Please use a synthetic or public-domain test document when reporting PDF-processing issues. Remove private paths, tokens, book metadata and personal information from logs and screenshots.
