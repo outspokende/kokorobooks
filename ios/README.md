@@ -1,45 +1,39 @@
-# iOS app (SwiftUI + AVPlayer)
+# iOS client
 
-Starter sources for the client. They are framework-only (no `.xcodeproj` checked
-in) so you create the project once in Xcode and drop these files in.
+The SwiftUI client connects to a KokoroBooks backend on your trusted home
+network or Tailscale tailnet. It streams generated audio with AVPlayer and can
+download completed M4B files for offline listening.
 
-## Build the project
-The Xcode project is generated from `project.yml` (no `.xcodeproj` in git):
+## Generate and build
+
+The Xcode project is generated from `project.yml` and is not checked into Git.
+Install XcodeGen, then run:
+
 ```bash
+brew install xcodegen
 cd ios
-xcodegen generate           # creates KokoroBooks.xcodeproj
-open KokoroBooks.xcodeproj   # or build from the CLI below
+xcodegen generate
+open KokoroBooks.xcodeproj
 ```
-CLI build + install to a connected iPhone:
-```bash
-DEVID=$(xcrun xctrace list devices 2>&1 | grep -v Simulator | grep iPhone | head -1)
-xcodebuild -project KokoroBooks.xcodeproj -scheme KokoroBooks \
-  -destination 'generic/platform=iOS' -allowProvisioningUpdates \
-  -derivedDataPath build build
-xcrun devicectl device install app <device-udid> \
-  build/Build/Products/Debug-iphoneos/KokoroBooks.app
-```
-Signing/Background-Audio/ATS are already configured in `project.yml`
-(team `YOUR_DEVELOPMENT_TEAM`, bundle id `com.henningjaeger.kokorobooks`).
+
+Choose your own Apple Developer signing team in Xcode. Do not reuse another
+developer's team identifier. Build and run on an iPhone reachable from the
+server.
 
 ## First launch
-Open **Settings** in the app and enter:
-- **Server URL**: `http://<your-mac>.<tailnet>.ts.net:8724` (MagicDNS name).
-- **API token**: printed by the server on startup
-  (`tail -f ~/Library/Logs/audiobookserver.out.log`).
 
-## What the starter covers
-- `APIClient` — bearer-auth REST calls (library, convert, status, progress).
-- `PlayerViewModel` — `AVPlayer` HLS playback, chapter seek, Now-Playing info,
-  and last-position sync to the server (last-write-wins). **Offline-first**: if a
-  book is downloaded it plays the local M4B with no server round-trip.
-- `DownloadManager` — downloads the finished `.m4b` (`GET /api/jobs/{id}/audio`)
-  to `Documents/Audiobooks/`, tracks a manifest, and evicts least-recently-played
-  files past a soft local cap (default 4 GB).
-- `LibraryView` / `PlayerView` — browse, start conversion, watch progress while
-  it streams, scrub chapters, download/remove for offline, offline badges.
+In the app settings, enter:
 
-## Not yet wired (optional next steps)
-- `AVAssetDownloadTask` for offline HLS (we download the finished M4B instead —
-  simpler and Audible-like).
-- A dedicated "Downloads" management screen (current UI manages per-book).
+- **Server URL:** for example `http://<mac-lan-ip>:8724` on a trusted LAN, or
+  your Tailscale URL.
+- **API token:** printed by the backend when it starts.
+
+## Current scope
+
+The client includes library browsing, conversion progress, HLS playback,
+chapter seeking, listening-position sync, and completed M4B downloads. Offline
+HLS downloads and a separate downloads-management screen are not implemented;
+the completed M4B download is the offline path.
+
+See the root [README](../README.md) for architecture, supported setup, and
+project validation status.

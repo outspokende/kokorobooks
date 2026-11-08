@@ -1,98 +1,56 @@
-# KokoroBooks — Setup
+# Setup
 
-## Quick Start
+See the [README quick start](README.md#get-started) for the supported install path.
+This page records the complete first-run checklist for a personal Apple Silicon
+server.
+
+## Requirements
+
+- Apple Silicon Mac running macOS, Python 3.11, and Xcode for the iOS client.
+- Homebrew and FFmpeg (`brew install ffmpeg`).
+- XcodeGen for generating the iOS project (`brew install xcodegen`).
+- Network access on first run to install Python packages and retrieve Kokoro model
+  files through MLX Audio.
+
+## Backend
 
 ```bash
-# 1. Repo klonen
 git clone https://github.com/outspokende/kokorobooks.git
-cd kokorobooks
-
-# 2. venv erstellen
-python3 -m venv backend/.venv
-source backend/.venv/bin/activate
-pip install -r backend/requirements.txt
-
-# 3. Models herunterladen (Kokoro TTS)
-# → https://github.com/remsky/Kokoro-ONNX/releases
-# Modell nach data/models/ legen (siehe docs in specs/)
-
-# 4. Piper Voices herunterladen
-# → https://github.com/rhasspy/piper/releases
-# Stimme nach data/piper-voices/ legen
-
-# 5. Library vorbereiten
-# PDFs nach library/ legen (beliebige Unterordner)
-# →library/STAR_WARS_ERA/PDFs/
-
-# 6. Konfiguration
-cp specs/memory/example.json data/memory/config.json
-# api_token.txt in data/ ablegen (Token von kokoro-endpoint oder own endpoint)
-
-# 7. Start
-cd backend
-KBS_LIBRARY_DIR=/opt/kokorobooks/library \
-KBS_DATA_DIR=/opt/kokorobooks/data \
-KBS_ENGINE=piper \
-KBS_HOST=0.0.0.0 \
-KBS_PORT=8724 \
-./.venv/bin/python -m app.serve
+cd kokorobooks/backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+mkdir -p ~/Audiobooks/PDFs
+python -m app.serve
 ```
 
-## Audio Cache
+Place PDFs you have permission to process in `~/Audiobooks/PDFs`. The server
+prints its bearer token at startup. Keep the token private. The default data
+directory is `~/Library/Application Support/KokoroBooks`; override it with
+`KBS_DATA_DIR`. Override the PDF directory with `KBS_LIBRARY_DIR`.
 
-`data/audio_cache/` wird automatisch befüllt beim ersten Durchlauf. Nicht in Git — kann jederzeit gelöscht werden.
+To use a different listening port, set `KBS_PORT` before starting the server.
+The server binds to `0.0.0.0` by default for access on a trusted home network.
+Do not expose it directly to the public internet or configure router port
+forwarding.
 
-## Datenstruktur
-
-```
-kokorobooks/
-├── backend/          # Python-Quellcode
-│   ├── app/          # FastAPI app
-│   ├── scripts/      # CLI scripts
-│   ├── requirements.txt
-│   └── tests/
-├── data/
-│   ├── api_token.txt         # Secret (NICHT in Git)
-│   ├── models/               # Kokoro ONNX-Modell (nicht in Git)
-│   ├── piper-voices/         # Piper Stimme (nicht in Git)
-│   ├── audio_cache/          # Generierte M4B-Dateien (nicht in Git)
-│   ├── state.sqlite3          # Verarbeitungsfortschritt
-│   └── logs/
-├── library/                   # PDFs hier ablegen (nicht in Git)
-├── deploy/                    # macOS launchd plist
-└── specs/                     # Konfiguration/Defaults
-```
-
-## Systemd Service (Linux)
-
-```ini
-# /home/USER/.config/systemd/user/kokorobooks.service
-[Unit]
-Description=KokoroBooks TTS Server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/kokorobooks/backend
-ExecStart=/opt/kokorobooks/backend/.venv/bin/python -m app.serve
-Restart=on-failure
-RestartSec=10
-
-Environment=KBS_ENGINE=piper
-Environment=KBS_HOST=0.0.0.0
-Environment=KBS_PORT=8724
-Environment=KBS_LIBRARY_DIR=/opt/kokorobooks/library
-Environment=KBS_AUDIO_CACHE_GB=50
-Environment=KBS_DATA_DIR=/opt/kokorobooks/data
-Environment=KBS_FFMPEG=/usr/bin/ffmpeg
-Environment=PATH=/opt/kokorobooks/backend/.venv/bin:/usr/local/bin:/usr/bin:/bin
-
-[Install]
-WantedBy=default.target
-```
+## iOS client
 
 ```bash
-systemctl --user enable kokorobooks.service
-systemctl --user start kokorobooks.service
+brew install xcodegen
+cd ../ios
+xcodegen generate
+open KokoroBooks.xcodeproj
 ```
+
+Select your own Apple Developer signing team in Xcode, build the app, then enter
+the backend URL and bearer token in the app settings. Details and known client
+limitations are in [`ios/README.md`](ios/README.md).
+
+## Model and generated data
+
+MLX Audio downloads model files as needed on first use. The application data,
+prepared text, state database, logs, and audio cache are kept outside the Git
+checkout by default. Never commit personal PDFs, generated audiobooks, tokens,
+or server data.
