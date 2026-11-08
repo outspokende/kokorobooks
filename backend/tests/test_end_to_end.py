@@ -1,4 +1,4 @@
-"""Exercise the PDF -> API -> worker -> FFmpeg -> download path with fake TTS."""
+"""Exercise PDF/TXT -> API -> worker -> FFmpeg -> download with fake TTS."""
 import shutil
 import time
 
@@ -12,8 +12,9 @@ from tests.conftest import make_pdf
     ("output_format", "download_path", "content_type"),
     [("m4b", "audio", "audio/mp4"), ("mp3", "mp3", "audio/mpeg")],
 )
-def test_pdf_to_download(db, env, monkeypatch,
-                         output_format, download_path, content_type):
+@pytest.mark.parametrize("source_type", ["pdf", "txt"])
+def test_book_to_download(db, env, monkeypatch, output_format, download_path,
+                          content_type, source_type):
     """Use the real queue worker and ffmpeg muxers; replace only TTS inference."""
     from app import config, supervisor as supervisor_module
     from app.server import create_app
@@ -25,11 +26,19 @@ def test_pdf_to_download(db, env, monkeypatch,
     monkeypatch.setenv("KBS_FFMPEG", ffmpeg)
     monkeypatch.setattr(supervisor_module, "ENGINE_KIND", "fake")
 
-    pdf_path = env["lib"] / "synthetic-book.pdf"
-    make_pdf(pdf_path, title="E2E Test Book", body=(
-        "This synthetic passage exercises the complete audiobook pipeline. "
-        "The test covers extraction, queue processing, audio encoding, and download."
-    ))
+    if source_type == "pdf":
+        book_path = env["lib"] / "synthetic-book.pdf"
+        make_pdf(book_path, title="E2E Test Book", body=(
+            "This synthetic passage exercises the complete audiobook pipeline. "
+            "The test covers extraction, queue processing, audio encoding, and download."
+        ))
+    else:
+        book_path = env["lib"] / "synthetic-book.txt"
+        book_path.write_text(
+            "This synthetic passage exercises the complete audiobook pipeline. "
+            "The test covers text cleanup, queue processing, audio encoding, and download.",
+            encoding="utf-8",
+        )
 
     supervisor = Supervisor(db)
     supervisor.start()
