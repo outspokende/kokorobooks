@@ -26,10 +26,15 @@ mkdir -p ~/Audiobooks/PDFs
 python -m app.serve
 ```
 
-Place PDFs you have permission to process in `~/Audiobooks/PDFs`. The server
-prints its bearer token at startup. Keep the token private. The default data
-directory is `~/Library/Application Support/KokoroBooks`; override it with
-`KBS_DATA_DIR`. Override the PDF directory with `KBS_LIBRARY_DIR`.
+Place PDFs or prepared TXT files you have permission to process in the library
+folder. By default, the server uses `~/Audiobooks/booksOUT` when it exists,
+otherwise `~/Audiobooks/PDFs`. The server prints its bearer token at startup.
+Keep the token private. The default data directory is
+`~/Library/Application Support/KokoroBooks`; override it with `KBS_DATA_DIR`.
+Set `KBS_LIBRARY_DIR` to select the scanned input folder. To use covers and
+processed text from a separate build-library output folder, set
+`KBS_BOOKS_OUT_DIR` too. The full setting inventory is in
+[`inventory.md`](inventory.md).
 
 The first synthesis downloads the configured Kokoro model from Hugging Face if
 it is not already cached. The English spaCy pipeline is installed during the

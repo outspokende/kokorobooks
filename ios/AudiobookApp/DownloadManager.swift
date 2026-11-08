@@ -121,7 +121,8 @@ final class DownloadManager: ObservableObject {
                 cacheStatus: "ready",
                 positionS: local?.positionS ?? 0,
                 updatedAt: local?.updatedAt,
-                pdfMissing: false
+                pdfMissing: false,
+                voiceId: nil
             )
         }.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
     }

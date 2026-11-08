@@ -4,7 +4,7 @@
 
 ### Your audiobook starts playing while Kokoro is still making it.
 
-A self-hosted audiobook server for your own PDF library, with an iOS player that can stream generated audio while it is being created.
+A self-hosted audiobook server for your PDF and prepared-text library, with an iOS player that can stream generated audio while it is being created.
 
 [![Platform](https://img.shields.io/badge/Apple_Silicon-MLX-13b8a6?style=for-the-badge)](#requirements)
 [![Backend](https://img.shields.io/badge/Backend-Python-3776ab?style=for-the-badge)](#how-it-works)
@@ -20,7 +20,7 @@ A self-hosted audiobook server for your own PDF library, with an iOS player that
 
 ## What is KokoroBooks?
 
-KokoroBooks turns PDFs in a folder on your Apple Silicon Mac into spoken audio with Kokoro 82M. The iPhone app can start playback from the growing audio stream before the full book has finished generating. When generation completes, the server assembles an M4B for offline listening.
+KokoroBooks turns PDFs or preprocessed TXT files in a folder on your Apple Silicon Mac into spoken audio with Kokoro 82M. The iPhone app can start playback from the growing audio stream before the full book has finished generating. When generation completes, the server assembles an M4B for offline listening.
 
 The project is designed for a personal library on a trusted home network or Tailscale network. Your PDFs remain on your server. KokoroBooks does not clone voices.
 
@@ -36,12 +36,14 @@ Traditional conversion makes you wait for the whole book. KokoroBooks generates 
 ## Features
 
 - Scan a server-side PDF library and identify books by content hash.
+- Read prepared TXT files as well as PDFs; optional library folders can supply matching covers.
 - Extract and prepare text before synthesis, with chapter-aware chunks and a cover image.
 - Generate audio with Kokoro 82M through MLX on Apple Silicon.
 - Stream generated audio to iOS using HLS while synthesis continues.
 - Resume listening position across devices.
 - Cache completed audio with size-bounded least-recently-played eviction.
 - Assemble a final M4B for offline listening or produce an MP3 download.
+- Choose from American and British English voices, with an optional saved voice per book.
 - Protect API operations with a bearer token.
 
 ## Requirements
@@ -111,6 +113,7 @@ The server API uses bearer authentication. The HLS stream is consumed by the iOS
 |---|---|---|
 | `GET` | `/api/library` | List books and cached status |
 | `GET` | `/api/library/{book_id}/cover` | Get a book cover |
+| `PUT` | `/api/library/{book_id}/voice` | Set or clear a book's preferred voice |
 | `POST` | `/api/library/{book_id}/prepare` | Prepare text without starting synthesis |
 | `POST` | `/api/convert` | Start or attach to conversion |
 | `GET` | `/api/jobs/{id}/status` | Read job and playback status |
@@ -119,6 +122,9 @@ The server API uses bearer authentication. The HLS stream is consumed by the iOS
 | `GET` | `/api/jobs/{id}/mp3` | Stream the growing or completed MP3 |
 | `GET` | `/api/stream/{id}/index.m3u8` | Read the growing HLS playlist |
 | `GET` | `/api/monitoring` | Read authenticated service status |
+| `GET` | `/api/queue/status` | Read queue counts |
+| `POST` | `/api/queue/wake` | Wake the queue supervisor |
+| `POST` | `/api/admin/reset-queue` | Cancel queued and active jobs |
 | `GET` / `PUT` | `/api/library/{book_id}/progress` | Read or update listening position |
 
 All API calls require the configured bearer token. See [`backend/`](backend) for implementation details.
@@ -149,6 +155,7 @@ third-party models and dependencies retain their own terms.
 - [`backend/`](backend) — Python API, PDF processing, audio generation, streaming and cache.
 - [`ios/`](ios) — SwiftUI client and playback.
 - [`deploy/`](deploy) — launchd template and installation notes; adjust paths for your Mac.
+- [`inventory.md`](inventory.md) — API routes, library paths, supported inputs and voice inventory.
 - [`SIMPLIFICATION.md`](SIMPLIFICATION.md) — historical note, superseded by the current Kokoro/MLX implementation.
 - [Backend test workflow](.github/workflows/backend-tests.yml) — runs the backend suite on pushes and pull requests.
 

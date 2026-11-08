@@ -49,7 +49,7 @@ class WorkerHandle:
         ref_text_file = work_dir / "ref_text.txt"
         ref_text_file.write_text(voice.get("ref_text") or "", encoding="utf-8")
         cmd = [
-            sys.executable, "-u", "-m", "app.worker",
+            config.venv_python(), "-u", "-m", "app.worker",
             "--engine", ENGINE_KIND,
             "--ref-audio", voice["ref_wav_path"],
             "--ref-text-file", str(ref_text_file),
@@ -137,6 +137,7 @@ class Supervisor:
         self._preferred_job_id: Optional[int] = None
         self._shutdown = threading.Event()
         self._current_job_id: Optional[int] = None
+        self._current_worker: Optional[WorkerHandle] = None
         self._current_chunk: Optional[dict] = None
         self._chunk_started_at: float = 0.0
         self._rate_chars_per_s: float = 0.0
@@ -152,10 +153,40 @@ class Supervisor:
 
     def start_queue(self) -> None:
         self._pause_requested.clear()
-        self.db.execute("UPDATE jobs SET status='queued' WHERE status='paused'")
+        # Only re-queue jobs that were intentionally paused, not cancelled
+        self.db.execute(
+            "UPDATE jobs SET status='queued' WHERE status='paused' AND id NOT IN "
+            "(SELECT id FROM jobs WHERE status='cancelled')")
+        self._queue_active.set()
+
+    def reset_queue(self) -> dict:
+        """Cancel all queued/processing jobs and wake the supervisor so it
+        picks up fresh requests cleanly. Use when the queue is stuck."""
+        self._pause_requested.set()
+        self._wake.set()
+        # Kill any running worker immediately — don't wait for SIGKILL to propagate
+        # through the pipe; just terminate the process group right now so the
+        # supervisor loop can accept new jobs without zombie workers on the pipe.
+        if self._current_worker is not None:
+            try:
+                self._current_worker.kill()
+            except Exception:
+                pass
+            self._current_worker = None
+        # Cancel all queued/processing jobs in the DB
+        with self.db._lock:
+            cur = self.db._conn.execute(
+                "UPDATE jobs SET status='cancelled' "
+                "WHERE status IN ('queued', 'processing') RETURNING id")
+            cancelled_ids = [row[0] for row in cur.fetchall()]
+            self.db._conn.commit()
+        # Clear any preferred-job priority so FIFO order applies
+        self._preferred_job_id = None
+        # Re-activate the queue so supervisor immediately accepts new requests
+        self._pause_requested.clear()
         self._queue_active.set()
         self.db.set_setting("queue_active", "1")
-        self._wake.set()
+        return {"cancelled": cancelled_ids, "current_job_id": self._current_job_id}
 
     def pause_queue(self) -> None:
         self._pause_requested.set()
@@ -182,8 +213,20 @@ class Supervisor:
         if not job:
             return
         if job["status"] == "processing":
-            self._pause_requested.set()
+            # Kill the worker immediately — don't wait for the pause flag to
+            # propagate through the chunk loop; SIGKILL severs the pipe and
+            # the reader thread gets _eof on the next wait_event call.
+            if (self._current_job_id == job_id
+                    and self._current_worker is not None):
+                try:
+                    self._current_worker.kill()
+                except Exception:
+                    pass
+                self._current_worker = None
+            self._pause_requested.set()   # abort current chunk immediately
         self.db.update_job(job_id, status="cancelled")
+        # Wake so supervisor picks the next job right away
+        self._wake.set()
 
     def wake(self) -> None:
         """Nudge the run loop to pick up a newly queued on-demand job."""
@@ -260,6 +303,7 @@ class Supervisor:
             finally:
                 self._current_job_id = None
                 self._current_chunk = None
+                self._current_worker = None
 
     def _process_job(self, job: dict) -> None:
         job_id = job["id"]
@@ -286,7 +330,7 @@ class Supervisor:
                 self.db.update_job(job_id, status="failed", error="voice not found")
                 return
         if not Path(job["pdf_path"]).exists():
-            self.db.update_job(job_id, status="failed", error="PDF not found")
+            self.db.update_job(job_id, status="failed", error="Book file not found")
             return
 
         # Everything for this (book, voice, format) lives under one cache dir:
@@ -309,13 +353,19 @@ class Supervisor:
         self.db.update_job(job_id, status="processing", work_dir=str(work_dir),
                            stream_dir=str(stream_dir),
                            started_at=job["started_at"] or time.time())
+        log(f"status set to 'processing'")
 
         if job["total_chunks"] == 0:
-            from .pdfproc import EXTRACTION_VERSION, prepare_or_load
-            log("loading/building clean chunk plan (pre-clean cache)")
-            meta = prepare_or_load(
-                job["pdf_path"], pdf_hash,
-                skip_front_matter=bool(job.get("skip_front_matter", 1)))
+            from .pdfproc import EXTRACTION_VERSION, prepare_or_load, prepare_txt
+            path = Path(job["pdf_path"])
+            if path.suffix.lower() == ".txt":
+                log("loading TXT chunk plan")
+                meta = prepare_txt(str(path))
+            else:
+                log("loading/building clean chunk plan (pre-clean cache)")
+                meta = prepare_or_load(
+                    job["pdf_path"], pdf_hash,
+                    skip_front_matter=bool(job.get("skip_front_matter", 1)))
             self.db.write_chunk_plan(job_id, meta["chunks"])
             self.db.update_job(
                 job_id, total_chunks=len(meta["chunks"]), title=meta["title"],
@@ -344,10 +394,16 @@ class Supervisor:
                 "ORDER BY idx", (job_id,)):
             mp3_streamer.feed_wav(ch["wav_path"], bool(ch["para_end"]), is_last=False)
 
-        worker: Optional[WorkerHandle] = None
+        self._current_worker: Optional[WorkerHandle] = None
         chunks_since_recycle = 0
         try:
             while not self._shutdown.is_set():
+                # Always check if the job was cancelled — this is the primary stop signal
+                # and must be checked before anything else (even before _pause_requested).
+                job_now = self.db.job(job_id)
+                if job_now is None or job_now["status"] == "cancelled":
+                    log("cancelled")
+                    return
                 if self._pause_requested.is_set():
                     self.db.update_job(job_id, status="paused")
                     log("paused by user")
@@ -358,21 +414,19 @@ class Supervisor:
                     log(f"preempted in favor of job {self._preferred_job_id} "
                         f"(the book just opened); will resume from checkpoint")
                     return
-                job_now = self.db.job(job_id)
-                if job_now is None or job_now["status"] == "cancelled":
-                    log("cancelled")
-                    return
                 pending = self.db.pending_chunks(job_id)
                 if not pending:
                     break
                 chunk = pending[0]
 
-                if worker is None or chunks_since_recycle >= config.WORKER_RECYCLE_EVERY_CHUNKS:
-                    if worker:
+                if (self._current_worker is None
+                        or chunks_since_recycle >= config.WORKER_RECYCLE_EVERY_CHUNKS):
+                    if self._current_worker:
                         log("recycling worker (memory hygiene)")
-                        worker.quit_gracefully()
-                    worker = self._spawn_ready_worker(job_now, voice, work_dir, log_file, log)
-                    if worker is None:
+                        self._current_worker.quit_gracefully()
+                    self._current_worker = self._spawn_ready_worker(
+                        job_now, voice, work_dir, log_file, log)
+                    if self._current_worker is None:
                         self.db.update_job(job_id, status="failed",
                                            error="worker failed to initialize (see job log)")
                         return
@@ -382,14 +436,15 @@ class Supervisor:
                 self._chunk_started_at = time.time()
                 timeout = max(config.CHUNK_TIMEOUT_BASE_S,
                               len(chunk["text"]) * config.CHUNK_TIMEOUT_PER_CHAR_S)
-                worker.send({"cmd": "chunk", "idx": chunk["idx"], "text": chunk["text"]})
-                ev = worker.wait_event(timeout)
+                self._current_worker.send({"cmd": "chunk", "idx": chunk["idx"],
+                                            "text": chunk["text"]})
+                ev = self._current_worker.wait_event(timeout)
 
                 if ev is None or ev.get("event") == "_eof":
                     reason = "watchdog timeout" if ev is None else "worker died"
                     log(f"chunk {chunk['idx']}: {reason} (attempt {chunk['attempts'] + 1})")
-                    worker.kill()
-                    worker = None
+                    self._current_worker.kill()
+                    self._current_worker = None
                     self._register_chunk_failure(job_id, chunk, reason, log)
                 elif ev.get("event") == "chunk_done":
                     dur = float(ev.get("duration", 0))
@@ -403,7 +458,8 @@ class Supervisor:
                                          attempts=chunk["attempts"] + 1)
                     self.db.execute(
                         "UPDATE jobs SET done_chunks=done_chunks+1, "
-                        "synth_seconds=synth_seconds+? WHERE id=?", (dur, job_id))
+                        "status='processing', synth_seconds=synth_seconds+? WHERE id=?",
+                        (dur, job_id))
                     # Stream this chunk immediately (single worker => in order).
                     assembler.feed_wav(ev["wav"], bool(chunk["para_end"]),
                                        is_last=False)
@@ -415,13 +471,14 @@ class Supervisor:
                     self._register_chunk_failure(job_id, chunk, str(ev.get("error")), log)
                 elif ev.get("event") == "fatal":
                     log(f"worker fatal: {ev.get('error')}")
-                    worker.kill()
-                    worker = None
+                    self._current_worker.kill()
+                    self._current_worker = None
                     self._register_chunk_failure(job_id, chunk, str(ev.get("error")), log)
         finally:
             self._current_chunk = None
-            if worker:
-                worker.quit_gracefully()
+            if self._current_worker:
+                self._current_worker.quit_gracefully()
+                self._current_worker = None
             # Close the muxer: flushes the last segment + writes #EXT-X-ENDLIST
             # if complete, or leaves a playable partial playlist otherwise.
             assembler.finalize()

@@ -32,7 +32,8 @@ class KokoroEngine:
         # mlx-audio returns an iterator of generation results. Long input can
         # be split internally, so concatenate every emitted audio block.
         generated = self.model.generate(
-            text=text, voice=ref_audio, speed=1.0, lang_code="a")
+            text=text, voice=ref_audio, speed=1.0,
+            lang_code="b" if ref_audio.startswith(("bf_", "bm_")) else "a")
         blocks = []
         for result in generated:
             audio = getattr(result, "audio", result)

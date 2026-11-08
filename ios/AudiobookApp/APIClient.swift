@@ -102,6 +102,21 @@ struct APIClient {
                        as: TranscriptResponse.self).lines
     }
 
+    struct ResetResponse: Codable { let ok: Bool; let cancelled: [Int]; let currentJobId: Int? }
+    func resetQueue() async throws -> ResetResponse {
+        try await send(request("/api/admin/reset-queue", method: "POST"), as: ResetResponse.self)
+    }
+
+    struct QueueStatus: Codable { let queued: Int; let processing: Int }
+    func queueStatus() async throws -> QueueStatus {
+        try await send(request("/api/queue/status"), as: QueueStatus.self)
+    }
+    func queueWake() async throws {
+        _ = try await send(request("/api/queue/wake", method: "POST"), as: EmptyResponse.self)
+    }
+
+    struct EmptyResponse: Codable {}
+
     func startRecap(bookID: String, positionS: Double) async throws -> String {
         let body = try JSONSerialization.data(withJSONObject: ["position_s": positionS])
         return try await send(request("/api/library/\(bookID)/recap", method: "POST", body: body),
@@ -114,6 +129,15 @@ struct APIClient {
         let r = try await send(request("/api/jobs/\(jobID)/cancel", method: "POST"),
                                as: CancelResponse.self)
         return r.status
+    }
+
+    /// Set the preferred voice for a book. Pass voiceId: nil to clear.
+    func setBookVoice(bookID: String, voiceId: Int?) async throws {
+        var body: [String: Any] = [:]
+        body["voice_id"] = voiceId as Any
+        let data = try JSONSerialization.data(withJSONObject: body)
+        _ = try await send(request("/api/library/\(bookID)/voice", method: "PUT", body: data),
+                          as: SetVoiceResponse.self)
     }
 
     /// Fetch the list of installed voices on the server.

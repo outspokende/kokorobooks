@@ -1,7 +1,7 @@
-"""PDF library: scan the library folder, give each book a stable id (content
+"""Book library: scan the library folder, give each book a stable id (content
 hash), and assemble the listing the iOS app browses.
 
-book_id == sha256 of the PDF bytes. It is stable across renames/moves, so the
+book_id == sha256 of the PDF or TXT bytes. It is stable across renames/moves, so the
 pre-clean cache, the audio cache and the listening position all key off it.
 """
 from __future__ import annotations
@@ -76,9 +76,48 @@ def cache_status(db: DB, pdf_hash: str, voice_id: Optional[int],
     return "none"
 
 
-def _all_pdfs() -> list[Path]:
-    """Every PDF anywhere under the library folder (recursive), sorted."""
-    return sorted(config.library_dir().rglob("*.pdf"))
+def _all_books() -> list[Path]:
+    """Every book (PDF or TXT) anywhere under the library folder (recursive), sorted."""
+    return sorted(config.library_dir().rglob("*.pdf")) + sorted(config.library_dir().rglob("*.txt"))
+
+
+def _book_cover_path(pdf: Path, pdf_hash: str) -> Optional[Path]:
+    """Find cover image for a book.
+
+    booksOUT structure: <Series>/covers/<title>.jpg  (title = pdf stem)
+    The covers/ folder is a sibling of the TXT file, not a sibling of the series folder.
+
+    Also handles the older structure where covers live next to books.
+    Falls back to the preclean cache.
+    """
+    books_out = config.books_out_dir()
+    lib_dir = config.library_dir()
+
+    # 1. booksOUT: <lib>/Series/covers/<title>.jpg
+    if books_out.exists() and pdf.exists():
+        try:
+            rel = pdf.relative_to(lib_dir)
+        except ValueError:
+            rel = None
+        if rel:
+            series_parent = rel.parent
+            cover = books_out / series_parent / "covers" / f"{pdf.stem}.jpg"
+            if cover.exists():
+                return cover
+
+    # 2. Older structure: covers/ folder next to the book file itself
+    sibling_cover = pdf.with_name("covers") / f"{pdf.stem}.jpg"
+    if sibling_cover.exists():
+        return sibling_cover
+    sibling_cover2 = pdf.parent / "covers" / f"{pdf.stem}.jpg"
+    if sibling_cover2.exists():
+        return sibling_cover2
+
+    # 3. preclean cache: <hash>/cover.jpg
+    preclean_cover = config.preclean_dir() / pdf_hash / "cover.jpg"
+    if preclean_cover.exists():
+        return preclean_cover
+    return None
 
 
 def _book_dict(db: DB, pdf: Path, voice_id: Optional[int], fmt: str) -> dict:
@@ -86,21 +125,21 @@ def _book_dict(db: DB, pdf: Path, voice_id: Optional[int], fmt: str) -> dict:
     meta = _preclean_meta(h) or {}
     prog = db.get_progress(h)
     rel = pdf.relative_to(config.library_dir())
+    cover_path = _book_cover_path(pdf, h)
+    book_voice = db.get_book_voice(h)
     return {
         "book_id": h,
         "filename": pdf.name,
         "rel_path": rel.as_posix(),
         "folder": rel.parent.as_posix() if rel.parent.as_posix() != "." else "",
-        # Display name = the filename stem you chose (e.g. "006 - Red Harvest").
-        # Stable before/after conversion; the embedded PDF title (which may drop
-        # your leading number) is only used for the M4B tags, not the listing.
         "title": pdf.stem,
         "author": meta.get("author") or "",
         "series": meta.get("series"),
-        "has_cover": (config.preclean_dir() / h / "cover.jpg").exists(),
+        "has_cover": cover_path is not None,
         "est_duration_s": _est_duration_s(h),
         "cache_status": cache_status(db, h, voice_id, fmt),
         "position_s": prog["position_s"] if prog else 0.0,
+        "voice_id": book_voice,
     }
 
 
@@ -108,7 +147,7 @@ def list_books(db: DB, voice_id: Optional[int] = None,
                fmt: str = "m4b") -> list[dict]:
     """Flat list of every book in the library (recursive)."""
     out = []
-    for pdf in _all_pdfs():
+    for pdf in _all_books():
         try:
             out.append(_book_dict(db, pdf, voice_id, fmt))
         except OSError:
@@ -124,7 +163,7 @@ def browse(db: DB, folder: str = "", q: Optional[str] = None,
     Otherwise: the contents of `folder` — its immediate subfolders (with a
     recursive book count) and the books directly inside it.
     """
-    pdfs = _all_pdfs()
+    pdfs = _all_books()
     if q:
         ql = q.lower()
         books = []
@@ -213,7 +252,14 @@ def started_books(db: DB, voice_id: Optional[int] = None,
 
 
 def resolve_pdf(pdf_hash: str) -> Optional[Path]:
-    """Map a book_id back to a PDF currently in the library folder (recursive)."""
+    """Map a book_id back to a book file (PDF or TXT) in the library folder.
+
+    Three-tier strategy:
+      1. in-memory cache (validates hash before returning)
+      2. library scan using mtime/size hash cache to avoid re-hashing unchanged files
+      3. booksOUT fallback: source file not in library but processed TXT exists in booksOUT
+    """
+    # Tier 1: cached path still valid?
     cached = _PATH_BY_HASH.get(pdf_hash)
     if cached and cached.exists():
         try:
@@ -221,29 +267,55 @@ def resolve_pdf(pdf_hash: str) -> Optional[Path]:
                 return cached
         except OSError:
             pass
-    for pdf in _all_pdfs():
+
+    # Tier 2: library scan
+    for pdf in _all_books():
         try:
             if file_hash(pdf) == pdf_hash:
                 return pdf
         except OSError:
             continue
+
+    # Tier 3: booksOUT fallback — source file is in booksIN but processed TXT is in booksOUT
+    books_out = config.books_out_dir()
+    if books_out.exists():
+        for txt in books_out.rglob("*.txt"):
+            try:
+                st = txt.stat()
+            except OSError:
+                continue
+            key = (str(txt), st.st_mtime, st.st_size)
+            known = _HASH_CACHE.get(key)
+            if known is None:
+                try:
+                    if file_hash(txt) == pdf_hash:
+                        _PATH_BY_HASH[pdf_hash] = txt
+                        return txt
+                except OSError:
+                    continue
     return None
 
 
 def ensure_cover(pdf_hash: str) -> Optional[Path]:
-    """Lazily extract a book's cover on first request (cheap: the page-1 image
-    or a render of page 1), independent of full conversion. Cached afterwards."""
+    """Lazily extract a book's cover on first request.
+    Checks booksOUT/covers/ first, then falls back to preclean extraction."""
+    # booksOUT cover?
+    pdf = resolve_pdf(pdf_hash)
+    if pdf:
+        cover = _book_cover_path(pdf, pdf_hash)
+        if cover:
+            return cover
+    # preclean fallback
     cdir = config.preclean_dir() / pdf_hash
     jpg = cdir / "cover.jpg"
     if jpg.exists():
         return jpg
-    pdf = resolve_pdf(pdf_hash)
     if not pdf:
         return None
     try:
         from .pdfproc.extract import extract_cover
         cdir.mkdir(parents=True, exist_ok=True)
-        png = extract_cover(str(pdf), cdir)   # writes cover.png
+        png = extract_cover(str(pdf), cdir)
         if png and Path(png).exists():
             import shutil
             shutil.copyfile(png, jpg)

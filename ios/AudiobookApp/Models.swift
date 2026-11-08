@@ -18,6 +18,8 @@ struct Book: Identifiable, Codable, Hashable {
     /// not found in the library (moved, deleted, NAS offline…). The book stays
     /// visible in the Listening tab so the user knows it's there.
     let pdfMissing: Bool?
+    /// Per-book voice preference. nil means use the global default.
+    let voiceId: Int?
 
     enum CodingKeys: String, CodingKey {
         case bookId = "book_id", filename, title, author, series
@@ -25,6 +27,7 @@ struct Book: Identifiable, Codable, Hashable {
         case hasCover = "has_cover", estDurationS = "est_duration_s"
         case cacheStatus = "cache_status", positionS = "position_s"
         case updatedAt = "updated_at", pdfMissing = "pdf_missing"
+        case voiceId = "voice_id"
     }
 
     var isUnavailable: Bool { pdfMissing == true }
@@ -131,6 +134,13 @@ struct CancelResponse: Codable {
     let status: String
     enum CodingKeys: String, CodingKey {
         case jobId = "job_id", status
+    }
+}
+
+struct SetVoiceResponse: Codable {
+    let voiceId: Int?
+    enum CodingKeys: String, CodingKey {
+        case voiceId = "voice_id"
     }
 }
 

@@ -34,6 +34,7 @@ final class PlayerViewModel: ObservableObject {
     private var lastSync = Date.distantPast
     private var lastTranscriptFetch = Date.distantPast
     private var coverImage: UIImage?
+    private var streamCancellables = Set<AnyCancellable>()
     /// Blocks position sync until restorePosition() has finished seeking.
     /// Without this, the first time-observer tick (currentTime = 0) overwrites
     /// the saved position on the server before we have a chance to seek to it.
@@ -63,7 +64,8 @@ final class PlayerViewModel: ObservableObject {
         }
         Task {
             do {
-                let voiceID = UserDefaults.standard.integer(forKey: "voiceID")
+                // Per-book voice takes priority; fall back to global default.
+                let voiceID = book.voiceId ?? UserDefaults.standard.integer(forKey: "voiceID")
                 let conv = try await api.convert(bookID: book.bookId, voiceID: voiceID)
                 self.jobID = conv.jobId
                 self.status = conv.status
@@ -116,11 +118,23 @@ final class PlayerViewModel: ObservableObject {
 
     private func attachStream() async {
         guard player == nil, let sp = streamPath, let url = api.absURL(sp) else { return }
+        print("[PlayerViewModel] attachStream url=\(url.absoluteString)")
         let asset = AVURLAsset(url: url, options: [
             "AVURLAssetHTTPHeaderFieldsKey":
                 ["Authorization": "Bearer \(api.settings.token)"]
         ])
-        attachPlayer(item: AVPlayerItem(asset: asset))
+        let item = AVPlayerItem(asset: asset)
+        // Log AVPlayerItem status changes for debugging
+        item.publisher(for: \.status)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] s in
+                print("[PlayerViewModel] AVPlayerItem status=\(String(describing: s)), error=\(String(describing: item.error))")
+                if s == .failed {
+                    self?.lastError = "Stream load failed: \(item.error?.localizedDescription ?? "check network")"
+                }
+            }
+            .store(in: &streamCancellables)
+        attachPlayer(item: item)
         await restorePosition()
     }
 
