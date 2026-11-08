@@ -24,7 +24,10 @@ KokoroBooks turns PDFs in a folder on your Apple Silicon Mac into spoken audio w
 
 The project is designed for a personal library on a trusted home network or Tailscale network. Your PDFs remain on your server. KokoroBooks does not clone voices.
 
-> **Prototype:** the backend has working PDF preparation, Kokoro synthesis, HLS streaming, authentication, progress sync and cache components. The iOS app is an early implementation. See [Project status](#project-status) for the limits of validation.
+> **Public beta:** PDF extraction, Kokoro synthesis, HLS streaming, authentication,
+> progress sync, and both audiobook download formats have been tested. The iOS
+> client builds for the simulator; see [Project status](#project-status) for the
+> current validation scope.
 
 ## Why stream while generating?
 
