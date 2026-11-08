@@ -9,7 +9,8 @@ A self-hosted audiobook server for your own PDF library, with an iOS player that
 [![Platform](https://img.shields.io/badge/Apple_Silicon-MLX-13b8a6?style=for-the-badge)](#requirements)
 [![Backend](https://img.shields.io/badge/Backend-Python-3776ab?style=for-the-badge)](#how-it-works)
 [![iOS](https://img.shields.io/badge/Client-iOS-111827?style=for-the-badge)](#generate-and-build-the-ios-app)
-[![Status](https://img.shields.io/badge/Status-Prototype-f59e0b?style=for-the-badge)](#project-status)
+[![Status](https://img.shields.io/badge/Status-Public_Beta-60a5fa?style=for-the-badge)](#project-status)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-8b7cf6?style=for-the-badge)](LICENSE)
 
 [Get started](#get-started) · [How it works](#how-it-works) · [API](#api-overview) · [Status](#project-status)
 
@@ -37,7 +38,7 @@ Traditional conversion makes you wait for the whole book. KokoroBooks generates 
 - Stream generated audio to iOS using HLS while synthesis continues.
 - Resume listening position across devices.
 - Cache completed audio with size-bounded least-recently-played eviction.
-- Assemble a final M4B for offline download when a job completes.
+- Assemble a final M4B for offline listening or produce an MP3 download.
 - Protect API operations with a bearer token.
 
 ## Requirements
@@ -47,6 +48,9 @@ Traditional conversion makes you wait for the whole book. KokoroBooks generates 
 - FFmpeg available to the backend for HLS muxing and M4B assembly.
 - An iPhone running a compatible iOS version and reachable server.
 - Network access to install dependencies and retrieve the model on first setup.
+- The English spaCy pipeline used by Kokoro's text front end is installed with
+  the backend requirements so the first conversion does not trigger a hidden
+  runtime download.
 
 ## Get started
 
@@ -109,6 +113,7 @@ The server API uses bearer authentication. The HLS stream is consumed by the iOS
 | `GET` | `/api/jobs/{id}/status` | Read job and playback status |
 | `GET` | `/api/jobs/{id}/chapters` | Get chapter timing |
 | `GET` | `/api/jobs/{id}/audio` | Download completed M4B |
+| `GET` | `/api/jobs/{id}/mp3` | Stream the growing or completed MP3 |
 | `GET` | `/api/stream/{id}/index.m3u8` | Read the growing HLS playlist |
 | `GET` | `/api/monitoring` | Read authenticated service status |
 | `GET` / `PUT` | `/api/library/{book_id}/progress` | Read or update listening position |
@@ -117,9 +122,14 @@ All API calls require the configured bearer token. See [`backend/`](backend) for
 
 ## Project status
 
-KokoroBooks is an experimental personal project, not a polished consumer app. Backend pieces for PDF preparation, streaming, progress, authentication and cache behavior have been exercised individually. The iOS client is an early implementation and requires Xcode configuration for your environment.
+KokoroBooks is a personal project in active development. The backend test suite
+and a synthetic-PDF conversion through the real Kokoro/MLX engine and M4B
+download have been verified on Apple Silicon. The iOS project builds for the
+simulator; a device build requires your Apple Developer signing setup.
 
-Before relying on it for a full library, verify the complete flow with your own non-sensitive sample PDF and review the generated text and audio. The project has not been validated as a production-grade or internet-facing service.
+The server is intended for a trusted home network or Tailscale, not as a
+public-facing service. Review the generated text and audio before relying on it
+for a personal library.
 
 ## Privacy and rights
 
@@ -127,13 +137,26 @@ The server processes PDFs from its configured local library. Do not put private 
 
 KokoroBooks uses Kokoro 82M through MLX. Review the terms for Kokoro, MLX Audio, PyMuPDF and other dependencies before redistribution or commercial use. See the [Kokoro model card](https://huggingface.co/mlx-community/Kokoro-82M-bf16) and the [PyMuPDF license information](https://pymupdf.io/licensing).
 
+The KokoroBooks source code is licensed under [GNU AGPL-3.0](LICENSE), matching
+the related Kokoro PDF project. This license applies to this repository's code;
+third-party models and dependencies retain their own terms.
+
 ## Repository map
 
 - [`backend/`](backend) — Python API, PDF processing, audio generation, streaming and cache.
 - [`ios/`](ios) — SwiftUI client and playback.
-- [`deploy/`](deploy) — launchd service template. Adjust paths for your own Mac before use.
-- [`SIMPLIFICATION.md`](SIMPLIFICATION.md) — design notes and scope decisions.
+- [`deploy/`](deploy) — launchd template and installation notes; adjust paths for your Mac.
+- [`SIMPLIFICATION.md`](SIMPLIFICATION.md) — historical note, superseded by the current Kokoro/MLX implementation.
+- [Backend test workflow](.github/workflows/backend-tests.yml) — runs the backend suite on pushes and pull requests.
 
 ## Contributing
 
 Bug reports and focused improvements are welcome. Please use a synthetic or public-domain test document when reporting PDF-processing issues. Remove private paths, tokens, book metadata and personal information from logs and screenshots.
+
+Run the backend suite on macOS or Linux with FFmpeg installed:
+
+```bash
+python -m pip install -r backend/requirements-test.txt
+cd backend
+python -m pytest -q
+```

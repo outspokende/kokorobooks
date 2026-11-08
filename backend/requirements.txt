@@ -1,6 +1,9 @@
 # Python 3.11 / Apple Silicon. Headless Kokoro/MLX server edition.
 mlx-audio>=0.2.9
 misaki[en]>=0.9.4
+# Misaki's English G2P lazily downloads this model on first use if it is absent.
+# Install it up front so first audiobook generation does not stall/retry in the worker.
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 pymupdf>=1.24.0
 mutagen>=1.47.0
 soundfile>=0.12.1

@@ -10,7 +10,8 @@ server.
 - Homebrew and FFmpeg (`brew install ffmpeg`).
 - XcodeGen for generating the iOS project (`brew install xcodegen`).
 - Network access on first run to install Python packages and retrieve Kokoro model
-  files through MLX Audio.
+  files through MLX Audio. The install also fetches the English spaCy pipeline
+  used by Kokoro's text front end.
 
 ## Backend
 
@@ -29,6 +30,10 @@ Place PDFs you have permission to process in `~/Audiobooks/PDFs`. The server
 prints its bearer token at startup. Keep the token private. The default data
 directory is `~/Library/Application Support/KokoroBooks`; override it with
 `KBS_DATA_DIR`. Override the PDF directory with `KBS_LIBRARY_DIR`.
+
+The first synthesis downloads the configured Kokoro model from Hugging Face if
+it is not already cached. The English spaCy pipeline is installed during the
+`pip install` step so first use does not need to fetch it inside a running job.
 
 To use a different listening port, set `KBS_PORT` before starting the server.
 The server binds to `0.0.0.0` by default for access on a trusted home network.

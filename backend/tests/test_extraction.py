@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def _make_running_head_pdf(path: Path) -> None:
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     for index in range(24):

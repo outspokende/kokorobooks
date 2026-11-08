@@ -365,11 +365,6 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
         db.delete_progress(book_id)
         return {"ok": True}
 
-    # ---- voices ----------------------------------------------------------
-    @app.get("/api/voices")
-    def list_voices():
-        return {"voices": db.voices(), "voice_create": None}
-
     return app
 
 

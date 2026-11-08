@@ -31,7 +31,8 @@ def test_builtin_us_male_voices_have_stable_ids(db):
 
 
 def test_voice_api_is_read_only(client):
-    assert [v["id"] for v in client.get("/api/voices").json()["voices"]] == [1, 2, 3, 4, 5]
+    # The iOS API client decodes this endpoint as a plain array.
+    assert [v["id"] for v in client.get("/api/voices").json()] == [1, 2, 3, 4, 5]
     assert client.post("/api/voices", json={}).status_code == 405
     assert client.patch("/api/voices/1", json={"name": "Changed"}).status_code in (404, 405)
     assert client.delete("/api/voices/1").status_code in (404, 405)

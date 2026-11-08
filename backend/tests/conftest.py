@@ -29,7 +29,7 @@ def db(env):
 def make_pdf(path: Path, title="Test Book", author="Tester",
              body="Hello world. This is a test paragraph for chunking."):
     """Create a tiny real PDF with extractable text (needs PyMuPDF)."""
-    import fitz
+    import pymupdf as fitz
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 90), title, fontsize=18)

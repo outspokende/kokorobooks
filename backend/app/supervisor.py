@@ -196,6 +196,10 @@ class Supervisor:
         and job_ids are processed FIFO with `requested` jobs getting priority.
         """
         self._preferred_job_id = job_id
+        if self._current_job_id is not None and self._current_job_id != job_id:
+            # _run_job checks this between chunks, so the current chunk can
+            # finish and checkpoint before the preferred book takes over.
+            self._preempt.set()
         self._wake.set()
 
     def shutdown(self) -> None:

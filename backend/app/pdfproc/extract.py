@@ -1,4 +1,4 @@
-"""PDF text + cover extraction with PyMuPDF (fitz).
+"""PDF text + cover extraction with PyMuPDF.
 
 Header/footer removal: lines that recur in the same position (first/last
 lines of a page) across a large share of pages are boilerplate and dropped,
@@ -11,7 +11,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 
 _PAGE_NUM_RE = re.compile(r"^\s*(?:page\s+)?[0-9ivxlcdm]+\s*(?:of\s+\d+\s*)?$", re.I)
 _HEADER_BAND = 0.09
