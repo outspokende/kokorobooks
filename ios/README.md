@@ -18,9 +18,7 @@ open KokoroBooks.xcodeproj
 
 Choose your own Apple Developer signing team in Xcode. Do not reuse another
 developer's team identifier. Build and run on an iPhone reachable from the
-server. Before installing on a physical device, replace the example
-`PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` with a unique identifier that
-belongs to your Apple Developer account, then run `xcodegen generate` again.
+server.
 
 ## First launch
 

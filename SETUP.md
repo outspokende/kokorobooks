@@ -56,9 +56,7 @@ open KokoroBooks.xcodeproj
 
 Select your own Apple Developer signing team in Xcode, build the app, then enter
 the backend URL and bearer token in the app settings. Details and known client
-limitations are in [`ios/README.md`](ios/README.md). For a physical-device
-build, change the example bundle identifier in `ios/project.yml` to one owned
-by your Apple Developer account and regenerate the project.
+limitations are in [`ios/README.md`](ios/README.md).
 
 ## Model and generated data
 

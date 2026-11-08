@@ -1,6 +1,6 @@
 name: KokoroBooks
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.henningjaeger
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -21,7 +21,7 @@ targets:
       - path: AudiobookApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.kokorobooks
+        PRODUCT_BUNDLE_IDENTIFIER: com.henningjaeger.kokorobooks
         PRODUCT_NAME: KokoroBooks
         INFOPLIST_KEY_CFBundleDisplayName: KokoroBooks
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
