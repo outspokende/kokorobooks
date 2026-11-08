@@ -64,8 +64,6 @@ struct SettingsView: View {
     @State private var token = ""
     @State private var checking = false
     @State private var error: String?
-    @State private var resettingQueue = false
-    @State private var resetResult: String?
 
     var body: some View {
         Form {
@@ -91,24 +89,6 @@ struct SettingsView: View {
                 .disabled(baseURL.isEmpty || token.isEmpty || checking)
             } footer: {
                 Text("Same WiFi: use the Mac's LAN IP. From anywhere: the Tailscale name. The token is printed by the server on startup.")
-            }
-            Section {
-                Button(role: .destructive) {
-                    Task { await resetQueue() }
-                } label: {
-                    HStack {
-                        Text("Reset Generation Queue")
-                        if resettingQueue { Spacer(); ProgressView() }
-                    }
-                }
-                .disabled(resettingQueue)
-                if let result = resetResult {
-                    Text(result).font(.caption).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Admin")
-            } footer: {
-                Text("Cancels all queued and in-progress jobs. Use when generation is stuck.")
             }
         }
         .navigationTitle("Settings")
@@ -138,83 +118,6 @@ struct SettingsView: View {
         } catch {
             self.error = "Can't reach the server. Check the URL and that the Mac is on."
         }
-    }
-
-    private var api: APIClient { APIClient(settings: settings) }
-
-    private func resetQueue() async {
-        resettingQueue = true
-        resetResult = nil
-        do {
-            let r = try await api.resetQueue()
-            resetResult = "Cancelled \(r.cancelled.count) job(s)."
-        } catch {
-            resetResult = "Reset failed."
-        }
-        resettingQueue = false
-    }
-}
-
-/// A full-width banner shown at the top of FolderView when the server queue
-/// has jobs stuck behind a currently-running book — tapping Cancel clears
-/// everything so the user can start their desired book immediately.
-struct QueueBanner: View {
-    @Binding var show: Bool
-    @EnvironmentObject private var settings: AppSettings
-    @State private var cancelling = false
-    @State private var result: String?
-
-    private var api: APIClient { APIClient(settings: settings) }
-
-    var body: some View {
-        if show {
-            Group {
-                if !cancelling, result == nil {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        Text("Queue busy — other books generating")
-                            .font(.caption)
-                        Spacer()
-                        Button("Cancel All") { Task { await cancel() } }
-                            .font(.caption).buttonStyle(.borderedProminent).tint(.red)
-                    }
-                    .padding(10)
-                    .background(Color.orange.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(.horizontal)
-                } else if cancelling {
-                    HStack {
-                        ProgressView()
-                        Text("Cancelling…")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                } else if let r = result {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text(r).font(.caption)
-                        Spacer()
-                        Button("Dismiss") { show = false }
-                            .font(.caption)
-                    }
-                    .padding(10)
-                    .background(Color.green.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(.horizontal)
-                }
-            }
-        }
-    }
-
-    private func cancel() async {
-        cancelling = true
-        do {
-            let r = try await api.resetQueue()
-            result = "\(r.cancelled.count) job(s) cancelled — open your book"
-        } catch {
-            result = "Failed to cancel"
-        }
-        cancelling = false
     }
 }
 
@@ -246,7 +149,6 @@ struct FolderView: View {
     @State private var loading = false
     @State private var showDownloadedOnly = false
     @AppStorage("voiceID") private var voiceID = 0
-    @State private var showQueueBanner = false
 
     private var api: APIClient { APIClient(settings: settings) }
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -254,15 +156,6 @@ struct FolderView: View {
 
     var body: some View {
         List {
-            // Queue warning banner — shown when another job is blocking the queue
-            QueueBanner(show: $showQueueBanner)
-                .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
-                .task {
-                    if let s = try? await api.queueStatus(),
-                       s.queued > 0 || s.processing > 0 {
-                        showQueueBanner = true
-                    }
-                }
             // Continue Listening strip — only on root, not searching, not filtered
             if isRoot, !searching, !showDownloadedOnly, !startedBooks.isEmpty {
                 Section("Continue") {
@@ -424,7 +317,7 @@ struct VoiceMenu: View {
     @AppStorage("voiceID") private var voiceID = 0
     @State private var voices: [Voice] = []
 
-    private let supportedNames = ["Michael", "Adam", "Eric", "Liam", "Onyx", "Emma (UK)", "Isabella (UK)"]
+    private let supportedNames = ["Michael", "Adam", "Eric", "Liam", "Onyx"]
     private var api: APIClient { APIClient(settings: settings) }
     private var selectedName: String {
         voices.first(where: { $0.id == voiceID })?.name ?? "Voice"
@@ -451,57 +344,6 @@ struct VoiceMenu: View {
         if voiceID == 0 || !voices.contains(where: { $0.id == voiceID }),
            let preferred = voices.first(where: { $0.name == "Michael" }) ?? voices.first {
             voiceID = preferred.id
-        }
-    }
-}
-
-/// Per-book voice picker shown in the player. Saves to the server and falls
-/// back to the global UserDefault.
-struct VoicePicker: View {
-    @EnvironmentObject private var settings: AppSettings
-    let bookID: String?
-    @Binding var selectedVoiceID: Int
-    @State private var voices: [Voice] = []
-    @State private var isSaving = false
-
-    private var api: APIClient { APIClient(settings: settings) }
-    private let supportedNames = ["Michael", "Adam", "Eric", "Liam", "Onyx", "Emma (UK)", "Isabella (UK)"]
-
-    private var selectedName: String {
-        voices.first(where: { $0.id == selectedVoiceID })?.name ?? "Stimme"
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "waveform")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("Stimme", selection: $selectedVoiceID) {
-                ForEach(voices) { voice in
-                    Text(voice.name).tag(voice.id)
-                }
-            }
-            .labelsHidden()
-            .onChange(of: selectedVoiceID) { newVal in
-                Task {
-                    if let bid = bookID {
-                        try? await api.setBookVoice(bookID: bid, voiceId: newVal)
-                    }
-                    UserDefaults.standard.set(newVal, forKey: "voiceID")
-                }
-            }
-        }
-        .task { await loadVoices() }
-    }
-
-    private func loadVoices() async {
-        guard let response = try? await api.browse(voiceID: nil) else { return }
-        let byName = [String: Voice](uniqueKeysWithValues: response.voices.map { ($0.name, $0) })
-        voices = supportedNames.compactMap { byName[$0] }
-        if selectedVoiceID == 0 || !voices.contains(where: { $0.id == selectedVoiceID }),
-           let preferred = voices.first(where: { $0.name == "Michael" }) ?? voices.first {
-            selectedVoiceID = preferred.id
         }
     }
 }
@@ -561,116 +403,108 @@ struct PlayerView: View {
     @StateObject private var vm: PlayerViewModelHolder = .init()
     @State private var tab = 0   // 0 = chapters, 1 = running text
     @State private var showRecap = false
-    @State private var selectedVoiceID: Int = 0
 
     private var api: APIClient { APIClient(settings: settings) }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                // ── Big cover ──
+        VStack(spacing: 12) {
+            // Now-playing bar: cover thumbnail + title/author (compact, so the
+            // text/chapter area below stays large).
+            HStack(spacing: 12) {
                 AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
                           token: settings.token) {
-                    RoundedRectangle(cornerRadius: 16).fill(Color.secondary.opacity(0.15))
+                    RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.2))
                 }
                 .scaledToFill()
-                .frame(width: 260, height: 260)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
-
-                // ── Title + author ──
-                VStack(spacing: 4) {
-                    Text(book.title).font(.headline).multilineTextAlignment(.center).lineLimit(3)
-                    if !book.author.isEmpty {
-                        Text(book.author).font(.subheadline)
-                            .foregroundStyle(.secondary).lineLimit(1)
-                    }
+                .frame(width: 58, height: 82).clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.primary.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(book.title).font(.headline).lineLimit(2)
+                    Text(book.author).font(.subheadline)
+                        .foregroundStyle(.secondary).lineLimit(1)
                 }
+                Spacer(minLength: 0)
+            }
 
-                if let m = vm.model {
-                    // ── Scrubber ──
-                    ScrubberView(vm: m)
-
-                    // Error
-                    if let err = vm.model?.lastError {
-                        Label(err, systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundStyle(.red)
-                    }
-
-                    // Status + download button
-                    HStack(spacing: 16) {
-                        playerStatusLabel(m: m)
-                        Spacer()
-                        // Download / delete button — three distinct visual states.
-                        if downloads.isDownloaded(book.bookId) {
-                            Button(role: .destructive) {
-                                downloads.delete(book.bookId)
-                            } label: {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.title3).foregroundStyle(.green)
-                                    .accessibilityLabel("Downloaded — tap to delete")
-                            }
-                        } else if let pct = downloads.progress[book.bookId], pct > 0, pct < 1 {
-                            ProgressView(value: pct)
-                                .progressViewStyle(.circular)
-                                .frame(width: 26, height: 26)
-                                .accessibilityLabel("\(Int(pct * 100)) percent downloaded")
-                        } else if downloads.progress[book.bookId] != nil {
-                            ProgressView().frame(width: 24, height: 24)
-                        } else {
-                            Button {
-                                vm.model?.downloadForOffline()
-                            } label: {
-                                Image(systemName: "arrow.down.circle")
-                                    .font(.title3)
-                            }
-                            .disabled(vm.model?.jobID == nil || !(vm.model?.status?.hasM4b ?? false))
-                            .accessibilityLabel("Download for offline — enabled once audio is ready")
+            if let m = vm.model {
+                ScrubberView(vm: m)
+                // Error
+                if let err = vm.model?.lastError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                // Status + download button — every state tells the user what's happening.
+                HStack(spacing: 16) {
+                    playerStatusLabel(m: m)
+                    Spacer()
+                    // Download / delete button — three distinct visual states.
+                    if downloads.isDownloaded(book.bookId) {
+                        Button(role: .destructive) {
+                            downloads.delete(book.bookId)
+                        } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3).foregroundStyle(.green)
+                                .accessibilityLabel("Downloaded — tap to delete")
                         }
+                    } else if let pct = downloads.progress[book.bookId], pct > 0, pct < 1 {
+                        // Actively downloading: show the percentage ring
+                        ProgressView(value: pct)
+                            .progressViewStyle(.circular)
+                            .frame(width: 26, height: 26)
+                            .accessibilityLabel("\(Int(pct * 100)) percent downloaded")
+                    } else if downloads.progress[book.bookId] != nil {
+                        // Just finished — show the green check briefly before the
+                        // manifest reload swaps in the green-checkmark button.
+                        ProgressView()
+                            .frame(width: 24, height: 24)
+                    } else {
+                        Button {
+                            vm.model?.downloadForOffline()
+                        } label: {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.title3)
+                        }
+                        .disabled(vm.model?.jobID == nil || !(vm.model?.status?.hasM4b ?? false))
+                        .accessibilityLabel("Download for offline — enabled once audio is ready")
                     }
-                }
-
-                // ── Play controls ──
-                HStack(spacing: 40) {
-                    Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) - 15) } label:
-                        { Image(systemName: "gobackward.15") }
-                    Button { vm.model?.isPlaying == true ? vm.model?.pause() : vm.model?.play() } label:
-                        { Image(systemName: vm.model?.isPlaying == true ? "pause.circle.fill" : "play.circle.fill")
-                            .resizable().frame(width: 58, height: 58) }
-                    Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) + 30) } label:
-                        { Image(systemName: "goforward.30") }
-                }.font(.title)
-
-                // ── Voice picker ──
-                VoicePicker(bookID: book.bookId, selectedVoiceID: $selectedVoiceID)
-                    .padding(.horizontal, 4)
-
-                // ── Sleep timer ──
-                HStack(spacing: 28) {
-                    sleepTimerControl
-                }
-
-                // ── Chapters / Transcript ──
-                let hasText = !(vm.model?.transcript.isEmpty ?? true)
-                if hasText {
-                    Picker("", selection: $tab) {
-                        Text("Chapters").tag(0)
-                        Text("Text").tag(1)
-                    }.pickerStyle(.segmented)
-                    .onChange(of: vm.model?.transcript.count ?? 0) { newCount in
-                        if newCount > 0 { tab = 1 }
-                    }
-                }
-
-                if tab == 1 && hasText, let m = vm.model {
-                    LyricsView(vm: m)
-                } else if let m = vm.model, !m.chapters.isEmpty {
-                    chapterList(m)
                 }
             }
-            .padding()
+
+            HStack(spacing: 40) {
+                Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) - 15) } label:
+                    { Image(systemName: "gobackward.15") }
+                Button { vm.model?.isPlaying == true ? vm.model?.pause() : vm.model?.play() } label:
+                    { Image(systemName: vm.model?.isPlaying == true ? "pause.circle.fill" : "play.circle.fill")
+                        .resizable().frame(width: 58, height: 58) }
+                Button { vm.model?.seek(to: (vm.model?.currentTime ?? 0) + 30) } label:
+                    { Image(systemName: "goforward.30") }
+            }.font(.title)
+
+            HStack(spacing: 28) {
+                sleepTimerControl
+            }
+
+            let hasText = !(vm.model?.transcript.isEmpty ?? true)
+            if hasText {
+                Picker("", selection: $tab) {
+                    Text("Chapters").tag(0)
+                    Text("Text").tag(1)
+                }.pickerStyle(.segmented)
+                // Switch to text tab the moment a transcript arrives (offline or online).
+                .onChange(of: vm.model?.transcript.count ?? 0) { newCount in
+                    if newCount > 0 { tab = 1 }
+                }
+            }
+
+            if tab == 1 && hasText, let m = vm.model {
+                LyricsView(vm: m)
+            } else if let m = vm.model, !m.chapters.isEmpty {
+                chapterList(m)
+            }
         }
+        .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .tint(tint)
         .toolbar {
@@ -686,32 +520,7 @@ struct PlayerView: View {
             RecapSheet(api: api, bookID: book.bookId,
                        positionS: vm.model?.currentTime ?? 0)
         }
-        .onAppear {
-            selectedVoiceID = book.voiceId ?? UserDefaults.standard.integer(forKey: "voiceID")
-            vm.configure(api: api, book: book)
-        }
-        .onChange(of: selectedVoiceID) { [weak vm] newVoiceID in
-            guard let vm, vm.model != nil else { return }
-            vm.model?.stop()
-            vm.model = nil
-            // Build the new book with the new voice
-            let refreshedBook = Book(
-                bookId: book.bookId, filename: book.filename, relPath: book.relPath,
-                folder: book.folder, title: book.title, author: book.author,
-                series: book.series, hasCover: book.hasCover, estDurationS: book.estDurationS,
-                cacheStatus: book.cacheStatus, positionS: 0,
-                updatedAt: nil, pdfMissing: book.pdfMissing, voiceId: newVoiceID)
-            // Cancel all jobs first, then immediately trigger convert() which
-            // cancels the old job (triggering supervisor to abort chunk) and
-            // starts the new job. Supervisor checks cancelled status every loop
-            // iteration so it aborts within ~1 second.
-            Task {
-                _ = try? await api.resetQueue()
-                // Small delay to let the supervisor process the cancel signal
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                vm.configure(api: api, book: refreshedBook)
-            }
-        }
+        .onAppear { vm.configure(api: api, book: book) }
         .onDisappear { vm.model?.stop() }
     }
 

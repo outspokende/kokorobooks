@@ -90,11 +90,6 @@ CREATE TABLE IF NOT EXISTS audio_cache (
     created_at REAL NOT NULL,
     last_access REAL NOT NULL
 );
--- Per-book voice preference. Overrides the global default.
-CREATE TABLE IF NOT EXISTS book_voices (
-    book_id TEXT PRIMARY KEY,
-    voice_id INTEGER NOT NULL
-);
 """
 
 # Fresh DB for the server edition: schema above is authoritative; ALTER TABLE
@@ -111,8 +106,6 @@ BUILTIN_VOICES = (
     (3, "Eric", "am_eric"),
     (4, "Liam", "am_liam"),
     (5, "Onyx", "am_onyx"),
-    (6, "Emma (UK)", "bf_emma"),
-    (7, "Isabella (UK)", "bf_isabella"),
 )
 
 
@@ -190,21 +183,6 @@ class DB:
 
     def delete_voice(self, voice_id: int) -> None:
         self.execute("DELETE FROM voices WHERE id=?", (voice_id,))
-
-    # --- book voices ---------------------------------------------------------
-    def get_book_voice(self, book_id: str) -> Optional[int]:
-        row = self.query_one("SELECT voice_id FROM book_voices WHERE book_id=?",
-                             (book_id,))
-        return row["voice_id"] if row else None
-
-    def set_book_voice(self, book_id: str, voice_id: int) -> None:
-        self.execute(
-            "INSERT OR REPLACE INTO book_voices(book_id, voice_id) VALUES(?, ?)",
-            (book_id, voice_id),
-        )
-
-    def delete_book_voice(self, book_id: str) -> None:
-        self.execute("DELETE FROM book_voices WHERE book_id=?", (book_id,))
 
     # --- jobs --------------------------------------------------------------
     def add_job(self, pdf_path: str, voice_id: int, output_dir: str,

@@ -15,20 +15,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# venv Python binary — ensures worker subprocesses activate the venv even when
-# sys.executable points to the raw homebrew/system Python (macOS launcher stub
-# behaviour means the venv activation only works when .venv/bin/python is used
-# as the executable path, not via the resolved symlink in sys.executable).
-# ---------------------------------------------------------------------------
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-
-
-def venv_python() -> str:
-    """Return the project venv interpreter, or the active interpreter in dev."""
-    candidate = _BACKEND_DIR / ".venv" / "bin" / "python"
-    return str(candidate if candidate.exists() else Path(sys.executable))
-
 # huggingface_hub 1.x retired hf_transfer in favor of the Xet backend. Clear
 # the deprecated flag and switch on Xet here at import time — config is imported
 # before huggingface_hub anywhere, so this also silences the warning in the main
@@ -124,23 +110,11 @@ def logs_dir() -> Path:
 
 
 def library_dir() -> Path:
-    """Folder of source books (TXT/PDF) the iOS app browses.
-    Default: booksOUT from the build-library pipeline."""
+    """Folder of source PDFs the iOS app browses. New books are dropped here."""
     env = os.environ.get("KBS_LIBRARY_DIR")
-    if env:
-        d = Path(env)
-    else:
-        d = books_out_dir()
-    if not d.exists():
-        d = Path.home() / "Audiobooks" / "PDFs"
+    d = Path(env) if env else (Path.home() / "Audiobooks" / "PDFs")
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def books_out_dir() -> Path:
-    """Root of the booksOUT library (contains Series/folders with txt + covers/)."""
-    env = os.environ.get("KBS_BOOKS_OUT_DIR")
-    return Path(env) if env else Path.home() / "Audiobooks" / "booksOUT"
 
 
 def preclean_dir() -> Path:

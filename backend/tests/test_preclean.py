@@ -26,18 +26,6 @@ def test_prepare_or_load_computes_then_caches(env, monkeypatch):
     assert second["chapter_titles"] == first["chapter_titles"]
 
 
-def test_prepare_or_load_preprocessed_txt(env):
-    from app import config, library, pdfproc
-    txt = env["lib"] / "01 - Prepared Story.txt"
-    txt.write_text("One clean paragraph for the audiobook.", encoding="utf-8")
-    h = library.file_hash(txt)
-    result = pdfproc.prepare_or_load(str(txt), h)
-    assert result["title"] == "Prepared Story"
-    assert result["chunks"]
-    assert result["extraction_report"]["source"] == "txt"
-    assert (config.preclean_dir() / h / "chunks.json").exists()
-
-
 def test_prepare_or_load_rebuilds_old_extraction_version(env, monkeypatch):
     import json
     from app import config, library, pdfproc

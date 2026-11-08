@@ -20,23 +20,19 @@ def client(db):
 
 def test_builtin_us_male_voices_have_stable_ids(db):
     voices = db.voices()
-    assert [(v["id"], v["name"], v["ref_wav_path"]) for v in voices[:5]] == [
+    assert [(v["id"], v["name"], v["ref_wav_path"]) for v in voices] == [
         (1, "Michael", "am_michael"),
         (2, "Adam", "am_adam"),
         (3, "Eric", "am_eric"),
         (4, "Liam", "am_liam"),
         (5, "Onyx", "am_onyx"),
     ]
-    assert [(v["id"], v["name"], v["ref_wav_path"]) for v in voices[5:]] == [
-        (6, "Emma (UK)", "bf_emma"),
-        (7, "Isabella (UK)", "bf_isabella"),
-    ]
     assert all(v["source_path"] == "builtin:kokoro" for v in voices)
 
 
 def test_voice_api_is_read_only(client):
     # The iOS API client decodes this endpoint as a plain array.
-    assert [v["id"] for v in client.get("/api/voices").json()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [v["id"] for v in client.get("/api/voices").json()] == [1, 2, 3, 4, 5]
     assert client.post("/api/voices", json={}).status_code == 405
     assert client.patch("/api/voices/1", json={"name": "Changed"}).status_code in (404, 405)
     assert client.delete("/api/voices/1").status_code in (404, 405)
@@ -71,9 +67,6 @@ def test_kokoro_engine_loads_and_concatenates(monkeypatch):
     assert np.allclose(audio, [0.1, 0.2, 0.3])
     assert calls == {"text": "Hello", "voice": "am_michael",
                      "speed": 1.0, "lang_code": "a"}
-    engine.synthesize("Hello", "bf_emma", "ignored")
-    assert calls == {"text": "Hello", "voice": "bf_emma",
-                     "speed": 1.0, "lang_code": "b"}
 
 
 def test_separate_defaults_and_shared_library(env, monkeypatch):

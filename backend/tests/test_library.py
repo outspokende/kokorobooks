@@ -42,16 +42,6 @@ def test_list_books_and_resolve(db, env):
     assert library.resolve_pdf("deadbeef") is None
 
 
-def test_list_and_resolve_prepared_txt(db, env):
-    from app import library
-    txt = env["lib"] / "Series" / "01 - First Contact.txt"
-    txt.parent.mkdir()
-    txt.write_text("A prepared plain text book.", encoding="utf-8")
-    books = library.list_books(db)
-    assert [b["filename"] for b in books] == [txt.name]
-    assert library.resolve_pdf(books[0]["book_id"]) == txt
-
-
 def test_browse_folders_and_counts(db, env):
     from app import library
     (env["lib"] / "SciFi" / "StarWars").mkdir(parents=True)

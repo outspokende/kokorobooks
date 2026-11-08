@@ -46,10 +46,6 @@ class ProgressReq(BaseModel):
     author: Optional[str] = None
 
 
-class BookVoiceReq(BaseModel):
-    voice_id: Optional[int]
-
-
 _SEG_MEDIA = {
     ".m3u8": "application/vnd.apple.mpegurl",
     ".mp4": "audio/mp4",
@@ -137,21 +133,6 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
             raise HTTPException(404, "no cover")
         return FileResponse(cover, media_type="image/jpeg")
 
-    @app.put("/api/library/{book_id}/voice")
-    def set_book_voice(book_id: str, req: BookVoiceReq):
-        """Set the preferred voice for a book. Pass voice_id: null to clear."""
-        pdf = library.resolve_pdf(book_id)
-        if not pdf:
-            raise HTTPException(404, "book not in library")
-        vid = req.voice_id
-        if vid is None:
-            db.delete_book_voice(book_id)
-        elif not db.voice(vid):
-            raise HTTPException(400, "unknown voice")
-        else:
-            db.set_book_voice(book_id, vid)
-        return {"voice_id": vid}
-
     @app.post("/api/library/{book_id}/prepare")
     def prepare(book_id: str, skip_front_matter: bool = True):
         """Force pre-clean (metadata/cover/chunk plan) without converting."""
@@ -202,6 +183,8 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
             db.update_job(job_id, pdf_path=str(pdf))   # file may have moved
         elif existing and existing["status"] in ("paused", "failed"):
             job_id = existing["id"]
+            # Refresh the path in case the PDF was moved into a subfolder; the
+            # content hash is unchanged so the checkpoint/cache still apply.
             db.update_job(job_id, pdf_path=str(pdf), error=None)
             supervisor.resume_job(job_id)
         else:
@@ -209,13 +192,6 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
                                 str(config.audio_cache_dir()), req.language,
                                 fmt, req.skip_front_matter)
             db.update_job(job_id, pdf_hash=req.book_id)
-            # Cancel the current job so the new one starts immediately.
-            # The supervisor checks cancelled status on every loop iteration so this
-            # takes effect within seconds (max one chunk delay).
-            snap = supervisor.status_snapshot()
-            current = snap.get("current_job_id")
-            if current is not None and current != job_id:
-                supervisor.cancel_job(current)
         if cached:
             db.touch_cache(ckey)
         supervisor.start_queue()
@@ -288,32 +264,6 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
     @app.get("/api/voices")
     def voices_endpoint():
         return [{"id": v["id"], "name": v["name"]} for v in db.voices()]
-
-    @app.post("/api/admin/reset-queue")
-    def admin_reset_queue():
-        """Cancel all queued/processing jobs and clear the worker slot.
-        Use this when the queue is stuck and nothing plays."""
-        result = supervisor.reset_queue()
-        return {"ok": True, **result}
-
-    @app.get("/api/queue/status")
-    def queue_status():
-        """How many jobs are queued vs actively processing right now."""
-        rows = db.query(
-            "SELECT status, COUNT(*) as n FROM jobs GROUP BY status")
-        counts = {r["status"]: r["n"] for r in rows}
-        return {
-            "queued": counts.get("queued", 0),
-            "processing": counts.get("processing", 0),
-            "done": counts.get("done", 0),
-            "cancelled": counts.get("cancelled", 0),
-        }
-
-    @app.post("/api/queue/wake")
-    def queue_wake():
-        """Nudge the supervisor to pick up queued jobs immediately."""
-        supervisor.wake()
-        return {"ok": True}
 
     @app.get("/api/stream/{job_id}/{filename}")
     def stream_file(job_id: int, filename: str):

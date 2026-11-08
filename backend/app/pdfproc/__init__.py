@@ -15,12 +15,12 @@ from .chunking import split_into_chunks
 from .cleaning import clean_text
 from .metadata import parse_filename, resolve_metadata, write_id3
 
-__all__ = ["prepare_job", "prepare_or_load", "prepare_txt", "clean_text", "split_into_chunks",
+__all__ = ["prepare_job", "prepare_or_load", "clean_text", "split_into_chunks",
            "parse_filename", "resolve_metadata", "write_id3"]
 
 # Bump when extraction/front-matter logic changes. Cached plans whose metadata
 # carries an older version are rebuilt automatically on next access.
-EXTRACTION_VERSION = 3
+EXTRACTION_VERSION = 2
 
 
 def _announce_heading(title: str, text: str) -> str:
@@ -80,7 +80,8 @@ def prepare_job(pdf_path: str, work_dir: Path,
         for t, para in split_into_chunks(text):
             chunks.append((t, para, ci))
     if not chunks:
-        raise RuntimeError("TXT contains no text after cleaning")
+        raise RuntimeError("PDF contains no extractable text "
+                           "(scanned/image-only PDFs are not supported)")
     cover = extract_cover(pdf_path, work_dir)
     (work_dir / "clean_text.txt").write_text("\n\n".join(debug_text),
                                              encoding="utf-8")
@@ -92,62 +93,10 @@ def prepare_job(pdf_path: str, work_dir: Path,
             "extraction_report": extraction_report}
 
 
-def prepare_txt(txt_path: str) -> dict:
-    """Read a plain TXT file, clean it, chunk it, and gather metadata.
-
-    Returns the same dict shape as prepare_job: chunks as 3-tuples
-    (text, para_end, chapter_idx), chapter_titles=["Full Text"].
-    No cover is extracted for TXT files.
-    """
-    from .metadata import parse_filename, split_series
-
-    path = Path(txt_path)
-    parent_author = path.parent.name if path.parent.name not in (".", "") else ""
-    author = parent_author
-
-    track, name_title = parse_filename(path.stem)
-    series, title = split_series(name_title)
-
-    try:
-        text_raw = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        # Fall back to latin-1 for files with Windows-1252 or similar chars
-        text_raw = path.read_text(encoding="latin-1")
-    text = clean_text(text_raw)
-    if not text:
-        raise RuntimeError("TXT contains no text after cleaning")
-
-    raw_chunks = split_into_chunks(text)
-    chunks: list[tuple[str, bool, int]] = [
-        (t, para, 0) for t, para in raw_chunks
-    ]
-
-    extraction_report = {
-        "source": "txt",
-        "file_size_bytes": path.stat().st_size,
-        "char_count": len(text),
-        "chunk_count": len(chunks),
-        "chapter_count": 1,
-        "author_from_folder": bool(parent_author),
-    }
-
-    return {
-        "title": title,
-        "author": author,
-        "track": track,
-        "series": series,
-        "cover_path": None,
-        "chunks": chunks,
-        "chapter_titles": ["Full Text"],
-        "extraction_report": extraction_report,
-    }
-
-
 def prepare_or_load(pdf_path: str, pdf_hash: str, *,
                     skip_front_matter: bool = True) -> dict:
-    """Pre-clean cache: run prepare_job (PDF) or prepare_txt (TXT) once per book
-    (keyed by content hash) and reuse the result on later conversions and for
-    library listing.
+    """Pre-clean cache: run prepare_job once per PDF (keyed by content hash) and
+    reuse the result on later conversions and for library listing.
 
     The cleaning/chunking step is cheap next to TTS, but caching it gives the
     library instant metadata/cover and lets a conversion start without re-parsing.
@@ -155,8 +104,6 @@ def prepare_or_load(pdf_path: str, pdf_hash: str, *,
     """
     from . import __name__ as _pkg  # noqa: F401 (keep heavy imports lazy)
     from .. import config
-
-    is_txt = pdf_path.lower().endswith(".txt")
 
     cache = config.preclean_dir() / pdf_hash
     plan_file = cache / "chunks.json"
@@ -174,18 +121,13 @@ def prepare_or_load(pdf_path: str, pdf_hash: str, *,
                     "cover_path": str(cover) if cover.exists() else None}
 
     cache.mkdir(parents=True, exist_ok=True)
+    result = prepare_job(pdf_path, cache, skip_front_matter=skip_front_matter)
+    # Normalize cover into the cache dir under a stable name.
     cover_out = None
-
-    if is_txt:
-        result = prepare_txt(pdf_path)
-    else:
-        result = prepare_job(pdf_path, cache, skip_front_matter=skip_front_matter)
-        # Normalize cover into the cache dir under a stable name.
-        if result.get("cover_path") and Path(result["cover_path"]).exists():
-            cover_out = cache / "cover.jpg"
-            if Path(result["cover_path"]) != cover_out:
-                shutil.copyfile(result["cover_path"], cover_out)
-
+    if result.get("cover_path") and Path(result["cover_path"]).exists():
+        cover_out = cache / "cover.jpg"
+        if Path(result["cover_path"]) != cover_out:
+            shutil.copyfile(result["cover_path"], cover_out)
     meta = {k: result[k] for k in
             ("title", "author", "track", "series", "chapter_titles",
              "extraction_report")}

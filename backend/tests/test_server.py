@@ -40,24 +40,6 @@ def test_library_lists_pdfs(client, env):
     assert books[0]["cache_status"] == "none"
 
 
-def test_book_voice_preference_can_be_set_and_cleared(client, env, db):
-    from app import library
-    pdf = env["lib"] / "voice.pdf"
-    make_pdf(pdf, title="Voice")
-    book_id = library.file_hash(pdf)
-    set_response = client.put(f"/api/library/{book_id}/voice",
-                              json={"voice_id": 6})
-    assert set_response.status_code == 200
-    listed = client.get("/api/library").json()["books"][0]
-    assert listed["voice_id"] == 6
-    assert client.put(f"/api/library/{book_id}/voice",
-                      json={"voice_id": 999}).status_code == 400
-    clear_response = client.put(f"/api/library/{book_id}/voice",
-                                json={"voice_id": None})
-    assert clear_response.status_code == 200
-    assert db.get_book_voice(book_id) is None
-
-
 def test_progress_endpoints(client):
     put = client.put("/api/library/bookZ/progress",
                      json={"position_s": 30.0, "duration_s": 60.0, "device_id": "iphone"})

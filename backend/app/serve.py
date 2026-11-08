@@ -22,15 +22,11 @@ def main() -> None:
     app = create_app(db, supervisor)
 
     token = config.get_or_create_token()
-    lib_dir = config.library_dir()
-    books_out = config.books_out_dir()
     print("=" * 60, flush=True)
     print(f"  KokoroBooks listening on "
           f"{config.SERVER_HOST}:{config.SERVER_PORT}", flush=True)
-    print(f"  library folder : {lib_dir}", flush=True)
-    print(f"  booksOUT folder : {books_out}", flush=True)
-    print(f"  library exists  : {lib_dir.exists()} ({len(list(lib_dir.rglob('*')))} items)", flush=True)
-    print(f"  API token       : {token}", flush=True)
+    print(f"  library folder: {config.library_dir()}", flush=True)
+    print(f"  API token:      {token}", flush=True)
     print("  (reach it over Tailscale; never expose to the open internet)",
           flush=True)
     print("=" * 60, flush=True)
