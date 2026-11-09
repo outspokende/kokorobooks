@@ -1,0 +1,149 @@
+name: KokoroBooks TestFlight
+
+on:
+  push:
+    tags: ["koko-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kokorobooks-testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Join private Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
+          tags: tag:ci
+      - name: Fetch shared store secrets
+        uses: Infisical/secrets-action@v1.0.18
+        with:
+          method: oidc
+          domain: ${{ vars.INFISICAL_URL }}
+          identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          project-slug: ${{ vars.INFISICAL_SHARED_PROJECT_SLUG }}
+          env-slug: prod
+      - name: Fetch KokoroBooks secrets
+        uses: Infisical/secrets-action@v1.0.18
+        with:
+          method: oidc
+          domain: ${{ vars.INFISICAL_URL }}
+          identity-id: ${{ vars.INFISICAL_IDENTITY_ID }}
+          project-slug: ${{ vars.INFISICAL_PROJECT_SLUG }}
+          env-slug: prod
+      - name: Install build tools
+        run: |
+          brew install xcodegen
+          gem install fastlane --no-document
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+      - name: Validate release configuration
+        id: release
+        env:
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.henningjaeger.kokorobooks' }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#koko-v}"
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo 'Tag must be koko-vMAJOR.MINOR or koko-vMAJOR.MINOR.PATCH'; exit 1; }
+          : "${APPLE_TEAM_ID:?Missing repository variable APPLE_TEAM_ID}"
+          : "${APP_STORE_CONNECT_KEY_ID:?Missing repository variable APP_STORE_CONNECT_KEY_ID}"
+          : "${APP_STORE_CONNECT_ISSUER_ID:?Missing repository variable APP_STORE_CONNECT_ISSUER_ID}"
+          : "${APP_STORE_CONNECT_KEY_P8:?Missing shared Infisical secret APP_STORE_CONNECT_KEY_P8}"
+          : "${IOS_DIST_CERT_P12_BASE64:?Missing shared Infisical secret IOS_DIST_CERT_P12_BASE64}"
+          : "${IOS_DIST_CERT_PASSWORD:?Missing shared Infisical secret IOS_DIST_CERT_PASSWORD}"
+          : "${IOS_PROVISIONING_PROFILE_BASE64:?Missing KokoroBooks Infisical secret IOS_PROVISIONING_PROFILE_BASE64}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "bundle_id=$IOS_BUNDLE_ID" >> "$GITHUB_OUTPUT"
+          echo "build_number=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+      - name: Install Apple signing assets
+        id: signing
+        env:
+          IOS_BUNDLE_ID: ${{ steps.release.outputs.bundle_id }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/kokoro-build.keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/kokoro-build.keychain"
+          security set-keychain-settings -t 3600 -u "$RUNNER_TEMP/kokoro-build.keychain"
+          security list-keychains -d user -s "$RUNNER_TEMP/kokoro-build.keychain"
+          echo "$IOS_DIST_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          security import "$RUNNER_TEMP/distribution.p12" -P "$IOS_DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$RUNNER_TEMP/kokoro-build.keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/kokoro-build.keychain"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/kokoro.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/kokoro.mobileprovision" > "$RUNNER_TEMP/kokoro-profile.plist"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/kokoro-profile.plist")
+          PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/kokoro-profile.plist")
+          PROFILE_BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$RUNNER_TEMP/kokoro-profile.plist" | sed "s/^${PROFILE_TEAM}.//")
+          [ "$PROFILE_TEAM" = "$APPLE_TEAM_ID" ] || { echo 'Provisioning profile belongs to a different Apple team'; exit 1; }
+          [ "$PROFILE_BUNDLE" = "$IOS_BUNDLE_ID" ] || { echo 'Provisioning profile bundle ID does not match IOS_BUNDLE_ID'; exit 1; }
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$RUNNER_TEMP/kokoro.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          echo "profile_uuid=$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+      - name: Archive iOS app
+        env:
+          IOS_BUNDLE_ID: ${{ steps.release.outputs.bundle_id }}
+          IOS_VERSION: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          PROFILE_UUID: ${{ steps.signing.outputs.profile_uuid }}
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/KokoroBooks.xcodeproj \
+            -scheme KokoroBooks \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/KokoroBooks.xcarchive" archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            MARKETING_VERSION="$IOS_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+      - name: Export IPA
+        env:
+          IOS_BUNDLE_ID: ${{ steps.release.outputs.bundle_id }}
+          PROFILE_UUID: ${{ steps.signing.outputs.profile_uuid }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>method</key><string>app-store-connect</string>
+          <key>signingStyle</key><string>manual</string>
+          <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+          <key>provisioningProfiles</key><dict><key>${IOS_BUNDLE_ID}</key><string>${PROFILE_UUID}</string></dict>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/KokoroBooks.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+      - name: Upload build to TestFlight
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          : "${APP_STORE_CONNECT_KEY_P8:?Missing shared Infisical secret APP_STORE_CONNECT_KEY_P8}"
+          ruby -rjson -e 'File.write(ENV.fetch("RUNNER_TEMP") + "/appstore-key.json", JSON.generate({key_id: ENV.fetch("APP_STORE_CONNECT_KEY_ID"), issuer_id: ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"), key: ENV.fetch("APP_STORE_CONNECT_KEY_P8"), in_house: false}), mode: "w"); File.chmod(0600, ENV.fetch("RUNNER_TEMP") + "/appstore-key.json")'
+          IPA_PATH="$(find "$RUNNER_TEMP/export" -maxdepth 2 -name '*.ipa' -print -quit)"
+          [ -n "$IPA_PATH" ] || { echo 'Export did not produce an IPA'; exit 1; }
+          fastlane pilot upload \
+            --api_key_path "$RUNNER_TEMP/appstore-key.json" \
+            --ipa "$IPA_PATH" \
+            --app_identifier '${{ steps.release.outputs.bundle_id }}' \
+            --skip_waiting_for_build_processing true
+      - if: always()
+        run: security delete-keychain "$RUNNER_TEMP/kokoro-build.keychain" || true
