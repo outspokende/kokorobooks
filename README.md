@@ -151,6 +151,7 @@ third-party models and dependencies retain their own terms.
 - [`deploy/`](deploy) — launchd template and installation notes; adjust paths for your Mac.
 - [`SIMPLIFICATION.md`](SIMPLIFICATION.md) — historical note, superseded by the current Kokoro/MLX implementation.
 - [Backend test workflow](.github/workflows/backend-tests.yml) — runs the backend suite on pushes and pull requests.
+- [Store release setup](docs/STORE_RELEASE.md) — iOS CI, TestFlight pipeline, and required credentials.
 
 ## Contributing
 
