@@ -5,10 +5,12 @@ on:
   push:
     paths:
       - "backend/**"
+      - "samples/**"
       - ".github/workflows/backend-tests.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "samples/**"
       - ".github/workflows/backend-tests.yml"
 
 jobs:

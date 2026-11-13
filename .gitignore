@@ -20,6 +20,21 @@ xcuserdata/
 api_token.txt
 *.sqlite3
 
+# Personal book libraries and conversion output must never be committed.
+# KokoroBooks ships no books; the sample PDFs are generated into the library
+# folder by `python -m app.samples`.
+booksIN/
+booksOUT/
+audiobooksTXT/
+txt_backup/
+samples/*.pdf
+*.m4b
+*.mp3
+*.wav
+
+# Tooling caches
+.hermes/
+
 # API keys (never commit)
 *_key.txt
 minimax_key.txt

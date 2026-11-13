@@ -6,4 +6,4 @@
 - [x] Rename iOS app/project/bundle and default endpoint.
 - [x] Expose voice picker with five presets.
 - [x] Run backend/security tests.
-- [x] Build, install, and launch on i15Henning.
+- [x] Build, install, and launch on a developer-signed iPhone.

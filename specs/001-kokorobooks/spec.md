@@ -8,6 +8,6 @@ As an audiobook listener I can browse the same PDF library in a separate iOS app
 - Library resolves to `~/Audiobooks/PDFs`.
 - Kokoro MLX synthesizes at 24 kHz with Michael, Adam, Eric, Liam, and Onyx presets.
 - `/api/library` returns those voices and conversion accepts their IDs.
-- iOS app is named KokoroBooks, bundle ID `com.henningjaeger.kokorobooks`, and defaults to port 8724.
+- iOS app is named KokoroBooks, bundle ID `com.example.kokorobooks` (replaced by the builder's own identifier), and defaults to port 8724.
 - Existing browse, streaming, chapters, transcript, progress, recap, and download behavior is preserved where engine-independent.
-- App installs and launches on `i15Henning`.
+- App installs and launches on a signed-in developer's iPhone.

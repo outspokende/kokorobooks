@@ -1,8 +1,9 @@
 # Setup
 
-See the [README quick start](README.md#get-started) for the supported install path.
+See the [README quick start](README.md#quick-start) for the supported install path.
 This page records the complete first-run checklist for a personal Apple Silicon
-server.
+server. If you would rather have an AI assistant run it, use the prompts in
+[`INSTALL_WITH_AI.md`](INSTALL_WITH_AI.md).
 
 ## Requirements
 
@@ -23,8 +24,15 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 mkdir -p ~/Audiobooks/PDFs
+python -m app.samples
 python -m app.serve
 ```
+
+`python -m app.samples` builds the public-domain starter library into
+`~/Audiobooks/PDFs/Public Domain Samples` so there is something to listen to
+immediately. It is optional and downloads nothing but plain text; see
+[`samples/README.md`](samples/README.md) for the catalog, the rights record,
+and the `--list`, `--only`, `--dest` and `--force` options.
 
 Place PDFs you have permission to process in `~/Audiobooks/PDFs`. The server
 prints its bearer token at startup. Keep the token private. The default data
@@ -51,7 +59,9 @@ open KokoroBooks.xcodeproj
 
 Select your own Apple Developer signing team in Xcode, build the app, then enter
 the backend URL and bearer token in the app settings. Details and known client
-limitations are in [`ios/README.md`](ios/README.md).
+limitations are in [`ios/README.md`](ios/README.md). For a physical-device
+build, change the example bundle identifier in `ios/project.yml` to one owned
+by your Apple Developer account and regenerate the project.
 
 ## Model and generated data
 
