@@ -146,9 +146,17 @@ gh variable set APP_STORE_CONNECT_ISSUER_ID -R outspokende/kokorobooks --body '<
 gh secret set KB_REVIEW_PHONE -R outspokende/kokorobooks     # prompts, nothing is echoed
 ```
 
-The job runs in the `production` environment because the Infisical identity
-trusts only `repo:outspokende/kokorobooks:environment:production`. A failed
-run says which of these is missing.
+The job runs in the `production` environment because the trust rules match on
+it. A failed run says which of these is missing.
+
+**If the Tailscale step fails with 403:** GitHub gives repositories created after
+15 July 2026 an immutable OIDC subject with numeric IDs, for this repository
+`repo:outspokende@272713119/kokorobooks@1322883625:environment:production`.
+A trust rule written for the old name-based form
+(`repo:outspokende/<name>:…`) rejects it. Run the `OIDC claims (debug)` workflow
+to see the exact claims, then set the Tailscale trust credential and the
+Infisical identity to the glob `repo:outspokende*/*:environment:production`
+(plus the claim `repository_owner_id = 272713119`), which matches both forms.
 
 The tag-driven TestFlight workflow in draft pull request #1 is a separate,
 optional step for later: it needs a distribution certificate and a provisioning
