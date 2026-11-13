@@ -105,3 +105,57 @@ def test_convert_invalidates_audio_from_old_extraction_version(client, db, env):
     assert db.get_cache(ckey) is None
     assert not cache_dir.exists()
     assert pdfproc.EXTRACTION_VERSION > 1
+
+
+# ---- demo mode: no endpoint may spend money for a stranger -------------------
+
+def test_library_advertises_recap_when_enabled(client):
+    body = client.get("/api/library").json()
+    assert body["features"]["recap"] is True
+    assert body["demo"] is False
+
+
+def test_demo_mode_disables_recap(client, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "RECAP_ENABLED", False)
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+
+    body = client.get("/api/library").json()
+    assert body["features"]["recap"] is False
+    assert body["demo"] is True
+
+    for path in ("/api/jobs/1/recap", "/api/library/deadbeef/recap"):
+        r = client.post(path, json={"position_s": 10.0})
+        assert r.status_code == 403, path
+        assert "demo" in r.json()["detail"]
+
+
+def test_demo_mode_leaves_listening_intact(client, monkeypatch):
+    """Browsing and playback must keep working on a demo server."""
+    from app import config
+    monkeypatch.setattr(config, "RECAP_ENABLED", False)
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    assert client.get("/api/library").status_code == 200
+    assert client.get("/api/monitoring").status_code == 200
+
+
+def test_recap_flag_defaults_follow_demo_mode(monkeypatch):
+    import importlib
+    from app import config
+
+    monkeypatch.setenv("KBS_DEMO", "1")
+    monkeypatch.delenv("KBS_RECAP", raising=False)
+    reloaded = importlib.reload(config)
+    assert reloaded.DEMO_MODE is True
+    assert reloaded.RECAP_ENABLED is False
+
+    # An explicit override still wins over the demo default.
+    monkeypatch.setenv("KBS_RECAP", "1")
+    reloaded = importlib.reload(config)
+    assert reloaded.RECAP_ENABLED is True
+
+    monkeypatch.delenv("KBS_DEMO", raising=False)
+    monkeypatch.delenv("KBS_RECAP", raising=False)
+    reloaded = importlib.reload(config)
+    assert reloaded.DEMO_MODE is False
+    assert reloaded.RECAP_ENABLED is True

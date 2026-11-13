@@ -68,6 +68,22 @@ AUDIO_CACHE_MAX_GB = float(os.environ.get("KBS_AUDIO_CACHE_GB", "20"))
 SERVER_HOST = os.environ.get("KBS_HOST", "0.0.0.0")
 SERVER_PORT = int(os.environ.get("KBS_PORT", "8724"))
 
+
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+# --- Demo mode ----------------------------------------------------------------
+# A public demo server hands out one shared token, so anything that costs money
+# or CPU on someone else's behalf has to be off. Demo mode disables the
+# "previously on…" recap, which calls a paid third-party API per request.
+# Everything needed to browse and listen stays available.
+DEMO_MODE = _flag("KBS_DEMO", False)
+RECAP_ENABLED = _flag("KBS_RECAP", not DEMO_MODE)
+
 # Nightly sleep window: outside this window the service keeps the Mac awake
 # (caffeinate) so it stays reachable; inside it the queue pauses and the Mac is
 # allowed to sleep. Times are local "HH:MM". Window may wrap past midnight.

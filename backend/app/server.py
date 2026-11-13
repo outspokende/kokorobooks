@@ -117,6 +117,9 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
                     voice_id: Optional[int] = None, fmt: str = "m4b"):
         result = library.browse(db, folder=folder, q=q, voice_id=voice_id, fmt=fmt)
         result["voices"] = db.voices()
+        # Lets the client hide controls the server will refuse anyway.
+        result["features"] = {"recap": config.RECAP_ENABLED}
+        result["demo"] = config.DEMO_MODE
         return result
 
     @app.get("/api/started")
@@ -292,8 +295,15 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
         return {"lines": _transcript(db, job_id)}
 
     # ---- "previously on…" recap -----------------------------------------
+    def _require_recap() -> None:
+        """Recap calls a paid third-party API, so a demo server turns it off."""
+        if not config.RECAP_ENABLED:
+            raise HTTPException(
+                403, "recap is disabled on this server (demo mode)")
+
     @app.post("/api/jobs/{job_id}/recap")
     def make_recap(job_id: int, req: RecapReq):
+        _require_recap()
         if not db.job(job_id):
             raise HTTPException(404, "unknown job")
         try:
@@ -306,6 +316,7 @@ def create_app(db: DB, supervisor: Supervisor) -> FastAPI:
     def make_recap_book(book_id: str, req: RecapReq):
         """Recap by book — works for offline-played downloads too (resolves the
         book's most recent generated job server-side)."""
+        _require_recap()
         job = db.latest_job_for_book(book_id)
         if not job:
             raise HTTPException(404, "no generated audio for this book yet")
