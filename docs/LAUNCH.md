@@ -8,7 +8,7 @@ list takes about 20 minutes.
 
 | | |
 |---|---|
-| Release build | Archives and signs. Bundle `de.outspoken.kokorobooks`, team `DK2RTWDH6D`. |
+| Release build | Archives and signs. Bundle `de.outspoken.kokorobooks`, team id from `KB_IOS_TEAM_ID`. |
 | App ID and App Store profile | Created automatically by Xcode in the developer account. |
 | Listing, screenshots, privacy and support pages | Ready, tested, live. |
 | Demo library for reviewers | Live: five books, 30 hours, no server needed. |
