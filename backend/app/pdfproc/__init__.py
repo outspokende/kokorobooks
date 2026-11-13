@@ -20,16 +20,43 @@ __all__ = ["prepare_job", "prepare_or_load", "clean_text", "split_into_chunks",
 
 # Bump when extraction/front-matter logic changes. Cached plans whose metadata
 # carries an older version are rebuilt automatically on next access.
-EXTRACTION_VERSION = 2
+EXTRACTION_VERSION = 3
+
+# How far into a chapter the printed heading may start. Part/book dividers
+# ("BOOK ONE — THE COMING OF THE MARTIANS") can sit above the chapter heading
+# on the same page, so the match is not anchored to the very first character.
+_HEADING_SEARCH_CHARS = 150
+
+
+def _heading_pattern(title: str) -> re.Pattern | None:
+    """Match a printed heading whose spacing/punctuation differs from the TOC.
+
+    A TOC entry reads 'Chapter I: The Eve of the War' while the page prints
+    'Chapter I' and 'The Eve of the War' on two lines. Matching word by word
+    with a tolerant separator catches both spellings.
+    """
+    words = re.findall(r"[^\W_]+", title, flags=re.UNICODE)
+    if not words:
+        return None
+    return re.compile(r"[\s\W_]{0,4}".join(re.escape(w) for w in words)
+                      + r"[\s.:,;\-\u2013\u2014]*", re.I)
 
 
 def _announce_heading(title: str, text: str) -> str:
     """Detach a heading that got glued to sentence one and re-announce it as
     its own paragraph: 'PROLOGUE The feeling...' -> 'Prologue.\\n\\nThe feeling...'
     so TTS speaks the title, pauses, then starts the prose."""
-    pat = re.compile(r"^\s*" + re.escape(title) + r"[\s.:,;-]*", re.I)
-    body = pat.sub("", text, count=1).lstrip()
     sep = "" if title.rstrip()[-1:] in ".!?" else "."
+    body = text.lstrip()
+    pattern = _heading_pattern(title)
+    if pattern:
+        match = pattern.search(text[:_HEADING_SEARCH_CHARS + 2 * len(title)])
+        # Only drop the duplicate when nothing but other heading lines precede
+        # it — a prefix containing sentence punctuation is already prose.
+        prefix = text[:match.start()] if match else ""
+        if match and match.start() <= _HEADING_SEARCH_CHARS \
+                and not re.search(r"[.!?]", prefix):
+            body = text[match.end():].lstrip()
     return f"{title}{sep}\n\n{body}" if body else f"{title}{sep}"
 
 
