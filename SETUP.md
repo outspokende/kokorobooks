@@ -17,7 +17,7 @@ server. If you would rather have an AI assistant run it, use the prompts in
 ## Backend
 
 ```bash
-git clone https://github.com/outspokende/kokorobooks.git
+git clone https://github.com/outspokenhardcore/kokorobooks.git
 cd kokorobooks/backend
 python3.11 -m venv .venv
 source .venv/bin/activate

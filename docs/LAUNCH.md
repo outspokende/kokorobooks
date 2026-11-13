@@ -141,9 +141,9 @@ Already set: `IOS_BUNDLE_ID`, `APPLE_TEAM_ID`, the review contact name and
 email, `KB_COPYRIGHT`, and the Infisical and Tailscale variables.
 
 ```bash
-gh variable set APP_STORE_CONNECT_KEY_ID -R outspokende/kokorobooks --body '<Key ID>'
-gh variable set APP_STORE_CONNECT_ISSUER_ID -R outspokende/kokorobooks --body '<Issuer ID>'
-gh secret set KB_REVIEW_PHONE -R outspokende/kokorobooks     # prompts, nothing is echoed
+gh variable set APP_STORE_CONNECT_KEY_ID -R outspokenhardcore/kokorobooks --body '<Key ID>'
+gh variable set APP_STORE_CONNECT_ISSUER_ID -R outspokenhardcore/kokorobooks --body '<Issuer ID>'
+gh secret set KB_REVIEW_PHONE -R outspokenhardcore/kokorobooks     # prompts, nothing is echoed
 ```
 
 The job runs in the `production` environment because the trust rules match on

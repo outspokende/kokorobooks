@@ -33,7 +33,7 @@ from . import config
 
 USER_AGENT = (
     "KokoroBooks-sample-fetcher/1.0 "
-    "(+https://github.com/outspokende/kokorobooks)"
+    "(+https://github.com/outspokenhardcore/kokorobooks)"
 )
 DOWNLOAD_TIMEOUT_S = 60
 DOWNLOAD_ATTEMPTS = 4

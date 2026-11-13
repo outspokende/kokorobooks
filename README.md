@@ -71,7 +71,7 @@ M4B with chapter marks for offline listening.
 ### 1 · Run the server
 
 ```bash
-git clone https://github.com/outspokende/kokorobooks.git
+git clone https://github.com/outspokenhardcore/kokorobooks.git
 cd kokorobooks/backend
 python3.11 -m venv .venv
 source .venv/bin/activate

@@ -43,7 +43,7 @@ SECTIONS, in this order:
    and streams them to your iPhone as they are generated. No cloud. No account.
    No upload."
    Two buttons: primary "View on GitHub" linking to
-   https://github.com/outspokende/kokorobooks, secondary "Join the TestFlight
+   https://github.com/outspokenhardcore/kokorobooks, secondary "Join the TestFlight
    beta" linking to # for now.
    Small print under the buttons: "Requires a Mac with Apple Silicon. Free and
    open source, AGPL-3.0."
@@ -113,7 +113,7 @@ SECTIONS, in this order:
    Caption under the grid: "Public domain in both the United States and the
    European Union. The provenance of every title is documented in the
    repository." Link "documented in the repository" to
-   https://github.com/outspokende/kokorobooks/blob/main/samples/README.md
+   https://github.com/outspokenhardcore/kokorobooks/blob/main/samples/README.md
 
 7. PRIVACY — a short, calm block, no icons:
    "Your PDFs, the prepared text and the generated audio never leave your Mac.
@@ -207,7 +207,7 @@ Add the page metadata:
   icon-180.png), which shows the KokoroBooks mole on deep navy.
 - JSON-LD of type SoftwareApplication: name KokoroBooks, applicationCategory
   "BookApplication", operatingSystem "iOS, macOS", offers price "0", license
-  "AGPL-3.0", url https://github.com/outspokende/kokorobooks.
+  "AGPL-3.0", url https://github.com/outspokenhardcore/kokorobooks.
 
 Do not add Google Analytics, Plausible, or any other tracker.
 ```
