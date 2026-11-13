@@ -1,5 +1,8 @@
 # Shipping the KokoroBooks app
 
+> **Ready to submit?** Go straight to the [launch runbook](LAUNCH.md). This page
+> is the background: lanes, review risks and listing copy.
+
 KokoroBooks is a client for **your own** server. That shapes every distribution
 decision below: there is no hosted backend, no account system, and nothing to
 sell. Pick the lane that matches who should get the app.

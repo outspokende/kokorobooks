@@ -260,7 +260,7 @@ setup.
 The app is not in the App Store yet. The path there — signing, privacy
 answers, the questions App Review asks about a self-hosted client, and a
 one-command screenshot pipeline — is written up in
-[`docs/APP_STORE.md`](docs/APP_STORE.md).
+[`docs/LAUNCH.md`](docs/LAUNCH.md).
 
 Known scope limits: no offline HLS downloads (the finished M4B is the offline
 path), English voices only, and image-only PDFs without a text layer are
@@ -297,7 +297,8 @@ using output commercially.
 | [`ios/screenshots.sh`](ios/screenshots.sh) | Captures the App Store screenshot set from the running app |
 | [`web/`](web) | The mauli.app/kokorobooks landing page and its deploy script |
 | [`deploy/`](deploy) | launchd template and installation notes |
-| [`docs/APP_STORE.md`](docs/APP_STORE.md) | TestFlight and App Store path for the client |
+| [`docs/LAUNCH.md`](docs/LAUNCH.md) | Step-by-step runbook to get the app into the App Store |
+| [`docs/APP_STORE.md`](docs/APP_STORE.md) | TestFlight and App Store background for the client |
 | [`APP_STORE_EXCEPTION.md`](APP_STORE_EXCEPTION.md) | AGPL additional permission for store distribution |
 | [`docs/BRAND.md`](docs/BRAND.md) | App icon, palette, and how to regenerate the icon |
 | [`INSTALL_WITH_AI.md`](INSTALL_WITH_AI.md) | Agent prompts for setup, use, and diagnosis |
