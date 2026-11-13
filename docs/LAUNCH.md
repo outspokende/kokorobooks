@@ -12,7 +12,8 @@ list takes about 20 minutes.
 | App ID and App Store profile | Created automatically by Xcode in the developer account. |
 | Listing, screenshots, privacy and support pages | Ready, tested, live. |
 | Demo library for reviewers | Live: five books, 30 hours, no server needed. |
-| **App record in App Store Connect** | **Missing.** Xcode asked and got no result for the bundle id. |
+| App record in App Store Connect | Created. |
+| First build | **Uploaded to TestFlight** (13 November 2026). |
 | App Store Connect API key | Not on this Mac. |
 
 ## 1 · Create the app record (5 min, web)
@@ -59,11 +60,16 @@ source ~/.config/kokorobooks/ios.env
 ios/release.sh --upload
 ```
 
-macOS may ask once whether `codesign` may use your *Apple Distribution* key.
-Choose **Always Allow**. The build appears in TestFlight after a few minutes of
-processing. Install it on your iPhone with the TestFlight app and listen for
-five minutes with the screen locked, which is the one thing the automated
-tests cannot check.
+The upload signs with a cloud-managed distribution certificate, so macOS does
+not ask for your keychain. The build appears in TestFlight after a few minutes
+of processing. Add yourself under *TestFlight → Internal Testing*, install it
+with the TestFlight app, and listen for five minutes with the screen locked,
+which is the one thing the automated tests cannot check.
+
+> **If the export fails with "Copy failed":** a Homebrew `rsync` earlier on
+> `PATH` is the cause (Xcode needs Apple's own). `release.sh` already puts
+> `/usr/bin` first; run `xcodebuild` by hand with the same `PATH` if you
+> bypass the script.
 
 ## 5 · Upload the listing (one command)
 

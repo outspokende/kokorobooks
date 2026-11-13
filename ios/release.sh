@@ -19,6 +19,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Xcode copies the IPA payload with rsync and expects Apple's own build. A
+# Homebrew rsync earlier on PATH makes the export fail with "Copy failed".
+export PATH="/usr/bin:$PATH"
+
 : "${KB_IOS_BUNDLE_ID:?Set KB_IOS_BUNDLE_ID to a bundle identifier your team owns}"
 : "${KB_IOS_TEAM_ID:?Set KB_IOS_TEAM_ID to your Apple Developer team id}"
 
