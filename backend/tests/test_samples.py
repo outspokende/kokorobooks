@@ -140,7 +140,7 @@ def test_catalog_lists_only_public_domain_english_titles():
     books = samples.load_catalog()
     assert len(books) >= 5
     slugs = {b.slug for b in books}
-    assert "the-war-of-the-worlds" in slugs  # shared with Kokoro-PDF-Audiobook
+    assert "the-war-of-the-worlds" in slugs  # shared with the sibling project
     for book in books:
         assert book.first_published < 1930, book.slug
         assert book.rights.get("status") == "Public domain", book.slug

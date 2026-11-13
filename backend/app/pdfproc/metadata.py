@@ -7,7 +7,7 @@ from typing import Optional
 
 
 def parse_filename(stem: str) -> tuple[Optional[str], str]:
-    """'224 - The New Jedi Order_Vector Prime' -> ('224', 'The New Jedi Order_Vector Prime')."""
+    """'12 - The Time Machine' -> ('12', 'The Time Machine')."""
     m = re.match(r"^(\d+)\s*[-–.]\s*(.+)$", stem)
     if m:
         return m.group(1), m.group(2).strip()

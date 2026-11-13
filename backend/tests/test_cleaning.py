@@ -23,7 +23,7 @@ def test_smart_quotes_normalized():
 
 
 def test_trademark_marks_stripped():
-    assert clean_text("Star Wars® universe") == "Star Wars universe"
+    assert clean_text("Time Machine® universe") == "Time Machine universe"
     assert clean_text("HyperBolic™") == "HyperBolic"
 
 
