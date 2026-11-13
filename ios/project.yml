@@ -1,6 +1,6 @@
 name: KokoroBooks
 options:
-  bundleIdPrefix: com.henningjaeger
+  bundleIdPrefix: com.example
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -21,7 +21,8 @@ targets:
       - path: AudiobookApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.henningjaeger.kokorobooks
+        # Replace with an identifier owned by your Apple Developer account.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.kokorobooks
         PRODUCT_NAME: KokoroBooks
         INFOPLIST_KEY_CFBundleDisplayName: KokoroBooks
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -30,11 +31,55 @@ targets:
       path: AudiobookApp/Info.plist
       properties:
         CFBundleDisplayName: KokoroBooks
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIBackgroundModes: [audio]      # keep playing with the screen locked
         # The server is reached over Tailscale via plain HTTP, so allow it.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: "Connect to your audiobook server on your private network."
+        # App Store Connect: the app uses no non-exempt encryption, so uploads
+        # do not stop for an export-compliance questionnaire.
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.books
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # App Store Connect rejects an iPad build that does not support every
+        # orientation (or declare full screen), so iPad rotates freely while
+        # the iPhone stays portrait.
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+  # Drives the app in a simulator to capture App Store screenshots.
+  # Not part of a release build; see ios/screenshots.sh and docs/APP_STORE.md.
+  KokoroBooksUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: KokoroBooks
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.kokorobooks.uitests
+        TEST_TARGET_NAME: KokoroBooks
+
+schemes:
+  KokoroBooks:
+    build:
+      targets:
+        KokoroBooks: all
+        KokoroBooksUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - KokoroBooksUITests
+    archive:
+      config: Release

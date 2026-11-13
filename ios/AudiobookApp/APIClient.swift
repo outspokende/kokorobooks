@@ -12,12 +12,23 @@ final class AppSettings: ObservableObject {
     @Published var appearance: String {
         didSet { UserDefaults.standard.set(appearance, forKey: "appearance") }
     }
+    /// What the connected server allows. Refreshed on every library load.
+    @Published var features = ServerFeatures()
+    /// Address of a pre-rendered static catalogue, when one is in use instead
+    /// of a server. Mutually exclusive with baseURL/token.
+    @Published var catalogueURL: String {
+        didSet { UserDefaults.standard.set(catalogueURL, forKey: "catalogueURL") }
+    }
+
+    /// Reading a catalogue of files rather than talking to a server.
+    var isCatalogue: Bool { !catalogueURL.isEmpty }
     /// Stable per-install id so the server knows which device wrote a position.
     let deviceID: String
 
     init() {
-        baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? "http://192.168.178.172:8724"
+        baseURL = UserDefaults.standard.string(forKey: "baseURL") ?? ""
         token = UserDefaults.standard.string(forKey: "token") ?? ""
+        catalogueURL = UserDefaults.standard.string(forKey: "catalogueURL") ?? ""
         appearance = UserDefaults.standard.string(forKey: "appearance") ?? "dark"
         if let d = UserDefaults.standard.string(forKey: "deviceID") {
             deviceID = d
@@ -28,7 +39,7 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    var isConfigured: Bool { !baseURL.isEmpty && !token.isEmpty }
+    var isConfigured: Bool { isCatalogue || (!baseURL.isEmpty && !token.isEmpty) }
 }
 
 enum APIError: Error { case badURL, http(Int), decode }
@@ -62,6 +73,17 @@ struct APIClient {
     /// Absolute URL for streaming/cover endpoints handed to AVPlayer / AsyncImage.
     /// Note: AVURLAsset needs the token as a header (see PlayerViewModel).
     func absURL(_ path: String) -> URL? { URL(string: settings.baseURL + path) }
+
+    /// Cover art for a book. A static catalogue stores it next to the audio
+    /// rather than behind the library endpoint, so the source differs.
+    @MainActor
+    func coverURL(_ bookID: String) -> URL? {
+        if settings.isCatalogue {
+            return CatalogueClient.shared.url(
+                CatalogueClient.shared.entry(bookID)?.coverUrl)
+        }
+        return absURL("/api/library/\(bookID)/cover")
+    }
 
     func browse(folder: String = "", q: String? = nil, voiceID: Int?,
                 fmt: String = "m4b") async throws -> BrowseResponse {

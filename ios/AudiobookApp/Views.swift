@@ -63,12 +63,16 @@ struct SettingsView: View {
     @State private var baseURL = ""
     @State private var token = ""
     @State private var checking = false
+    @State private var loadingCatalogue = false
     @State private var error: String?
+
+    /// Hosted catalogue of pre-rendered public-domain books.
+    static let demoCatalogueURL = "https://www.mauli.app/kokorobooks/catalogue/"
 
     var body: some View {
         Form {
             Section("Server") {
-                TextField("http://192.168.178.172:8724", text: $baseURL)
+                TextField("http://192.168.1.10:8724", text: $baseURL)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
@@ -90,9 +94,48 @@ struct SettingsView: View {
             } footer: {
                 Text("Same WiFi: use the Mac's LAN IP. From anywhere: the Tailscale name. The token is printed by the server on startup.")
             }
+
+            Section {
+                if settings.isCatalogue {
+                    Button(role: .destructive) {
+                        settings.catalogueURL = ""
+                    } label: { Text("Leave the demo library") }
+                } else {
+                    Button {
+                        Task { await useCatalogue() }
+                    } label: {
+                        HStack {
+                            Text(loadingCatalogue ? "Loading…" : "Try the demo library")
+                            if loadingCatalogue { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(loadingCatalogue)
+                }
+            } header: {
+                Text("No server yet?")
+            } footer: {
+                Text(settings.isCatalogue
+                     ? "Pre-generated public-domain books, served as plain files. Your listening position stays on this device."
+                     : "Five public-domain books, already generated. No Mac, no server, no token \u{2014} just listen.")
+            }
         }
         .navigationTitle("Settings")
         .onAppear { baseURL = settings.baseURL; token = settings.token }
+    }
+
+    /// Switch to the hosted demo catalogue, but only after proving it loads —
+    /// a broken address must not leave the app stuck on an empty library.
+    private func useCatalogue() async {
+        loadingCatalogue = true; error = nil
+        defer { loadingCatalogue = false }
+        do {
+            _ = try await CatalogueClient.shared.load(from: Self.demoCatalogueURL)
+            settings.catalogueURL = Self.demoCatalogueURL
+            dismiss()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+                ?? "The demo library is not reachable right now."
+        }
     }
 
     private func connect() async {
@@ -137,6 +180,7 @@ struct LibraryView: View {
 /// and an All/Downloaded filter toggle.
 struct FolderView: View {
     @EnvironmentObject var settings: AppSettings
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var downloads = DownloadManager.shared
     let folder: String
     let title: String
@@ -164,7 +208,7 @@ struct FolderView: View {
                             ForEach(startedBooks) { book in
                                 NavigationLink(value: book) {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                                        AuthImage(url: api.coverURL(book.bookId),
                                                   token: settings.token) {
                                             RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.2))
                                         }
@@ -240,7 +284,7 @@ struct FolderView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
-            if isRoot {
+            if isRoot, !settings.isCatalogue {
                 ToolbarItem(placement: .navigationBarTrailing) { VoiceMenu() }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }
@@ -248,7 +292,10 @@ struct FolderView: View {
             }
         }
         .refreshable { await load() }
-        .task(id: "\(query)|\(voiceID)|\(showDownloadedOnly)") { await load() }
+        .task(id: "\(query)|\(voiceID)|\(showDownloadedOnly)|\(settings.catalogueURL)|\(settings.isCatalogue && scenePhase == .active)") {
+            if settings.isCatalogue && scenePhase != .active { return }
+            await load()
+        }
         .overlay { if let e = error { Text(e).foregroundStyle(.red).padding() } }
     }
 
@@ -277,12 +324,37 @@ struct FolderView: View {
             return
         }
 
+        // Static catalogue: one manifest, filtered on the device.
+        if settings.isCatalogue {
+            do {
+                var all = try await CatalogueClient.shared.load(from: settings.catalogueURL)
+                guard !Task.isCancelled else { return }
+                if !q.isEmpty {
+                    let lq = q.lowercased()
+                    all = all.filter { $0.title.lowercased().contains(lq)
+                                    || $0.author.lowercased().contains(lq) }
+                }
+                subfolders = []
+                books = all
+                startedBooks = all.filter { ($0.fractionComplete ?? 0) > 0.01 }
+                settings.features = ServerFeatures(recap: false)
+                error = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.error = (error as? LocalizedError)?.errorDescription
+                    ?? "Cannot reach the catalogue"
+            }
+            return
+        }
+
         // Online: load from server
         do {
             let r = try await api.browse(folder: folder, q: q.isEmpty ? nil : q,
                                          voiceID: voiceID == 0 ? nil : voiceID)
             subfolders = r.subfolders
             books = r.books
+            // Older servers omit this and support everything.
+            settings.features = r.features ?? ServerFeatures()
             if UserDefaults.standard.object(forKey: "voiceID") == nil,
                let first = r.voices.first {
                 UserDefaults.standard.set(first.id, forKey: "voiceID")
@@ -362,7 +434,7 @@ struct BookRow: View {
     var body: some View {
         NavigationLink(value: book) {
             HStack(spacing: 12) {
-                AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                AuthImage(url: api.coverURL(book.bookId),
                           token: settings.token) { Color.gray.opacity(0.2) }
                     .scaledToFill()
                     .frame(width: 44, height: 60).clipped()
@@ -411,7 +483,7 @@ struct PlayerView: View {
             // Now-playing bar: cover thumbnail + title/author (compact, so the
             // text/chapter area below stays large).
             HStack(spacing: 12) {
-                AuthImage(url: api.absURL("/api/library/\(book.bookId)/cover"),
+                AuthImage(url: api.coverURL(book.bookId),
                           token: settings.token) {
                     RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.2))
                 }
@@ -440,7 +512,11 @@ struct PlayerView: View {
                     playerStatusLabel(m: m)
                     Spacer()
                     // Download / delete button — three distinct visual states.
-                    if downloads.isDownloaded(book.bookId) {
+                    // A static catalogue publishes no M4B, so there is nothing
+                    // to download and the control would only mislead.
+                    if settings.isCatalogue {
+                        EmptyView()
+                    } else if downloads.isDownloaded(book.bookId) {
                         Button(role: .destructive) {
                             downloads.delete(book.bookId)
                         } label: {
@@ -509,10 +585,13 @@ struct PlayerView: View {
         .tint(tint)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    vm.model?.pause()
-                    showRecap = true
-                } label: { Image(systemName: "text.bubble") }
+                if settings.features.recap {
+                    Button {
+                        vm.model?.pause()
+                        showRecap = true
+                    } label: { Image(systemName: "text.bubble") }
+                    .accessibilityLabel("Previously on…")
+                }
             }
             ToolbarItem(placement: .navigationBarTrailing) { ThemeToggleButton() }
         }

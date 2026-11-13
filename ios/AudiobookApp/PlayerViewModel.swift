@@ -61,6 +61,10 @@ final class PlayerViewModel: ObservableObject {
         if downloadedHasManifestEntryOnly(book.bookId) {
             downloads.delete(book.bookId)
         }
+        if api.settings.isCatalogue {
+            Task { await startFromCatalogue() }
+            return
+        }
         Task {
             do {
                 let voiceID = UserDefaults.standard.integer(forKey: "voiceID")
@@ -81,6 +85,28 @@ final class PlayerViewModel: ObservableObject {
                 lastError = "Cannot reach server"
             }
         }
+    }
+
+    /// Play a pre-rendered book straight from static files. There is no job to
+    /// create or poll: the audio is finished, the chapter marks and transcript
+    /// are plain JSON next to it, and the position stays on this device.
+    private func startFromCatalogue() async {
+        let catalogue = CatalogueClient.shared
+        guard let entry = catalogue.entry(book.bookId),
+              let url = catalogue.url(entry.hlsUrl) else {
+            lastError = "This book is not in the catalogue"
+            return
+        }
+        status = JobStatus(
+            jobId: 0, bookId: book.bookId, state: "done",
+            doneChunks: entry.chapters, totalChunks: entry.chapters,
+            availableSeconds: entry.durationS ?? 0, playable: true,
+            streamUrl: entry.hlsUrl, hasM4b: entry.m4bUrl != nil,
+            title: entry.title, author: entry.author)
+        chapters = (try? await catalogue.chapters(for: entry)) ?? []
+        transcript = (try? await catalogue.transcript(for: entry)) ?? []
+        attachPlayer(item: AVPlayerItem(url: url))
+        await restorePosition()
     }
 
     /// True when a download manifest entry exists but the file is missing or 0-byte.
@@ -270,7 +296,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func fetchCover() async {
-        guard let url = api.absURL("/api/library/\(book.bookId)/cover") else { return }
+        guard let url = api.coverURL(book.bookId) else { return }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(api.settings.token)", forHTTPHeaderField: "Authorization")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),

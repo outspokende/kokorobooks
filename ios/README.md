@@ -18,7 +18,9 @@ open KokoroBooks.xcodeproj
 
 Choose your own Apple Developer signing team in Xcode. Do not reuse another
 developer's team identifier. Build and run on an iPhone reachable from the
-server.
+server. Before installing on a physical device, replace the example
+`PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` with a unique identifier that
+belongs to your Apple Developer account, then run `xcodegen generate` again.
 
 ## First launch
 
@@ -30,10 +32,14 @@ In the app settings, enter:
 
 ## Current scope
 
+In the demo catalogue, returning to the app or pulling down in the library
+fetches the current book list from the host.
+
 The client includes library browsing, conversion progress, HLS playback,
 chapter seeking, listening-position sync, and completed M4B downloads. Offline
 HLS downloads and a separate downloads-management screen are not implemented;
 the completed M4B download is the offline path.
 
 See the root [README](../README.md) for architecture, supported setup, and
-project validation status.
+project validation status. For TestFlight and App Store distribution, see
+[`docs/APP_STORE.md`](../docs/APP_STORE.md).

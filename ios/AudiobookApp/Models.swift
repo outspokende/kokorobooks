@@ -50,12 +50,20 @@ struct LibraryFolder: Identifiable, Codable, Hashable {
     let count: Int
 }
 
+/// What the connected server is willing to do. A public demo server turns off
+/// anything that spends money or CPU for a stranger.
+struct ServerFeatures: Codable, Equatable {
+    var recap: Bool = true
+}
+
 /// Response of GET /api/library — a folder's contents, or global search results.
 struct BrowseResponse: Codable {
     let folder: String
     let subfolders: [LibraryFolder]
     let books: [Book]
     let voices: [Voice]
+    /// Absent on older servers, which always supported every feature.
+    let features: ServerFeatures?
 }
 
 struct JobStatus: Codable {
