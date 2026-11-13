@@ -141,7 +141,7 @@ thrillers — directly into your library folder.
 Each is in the public domain in both the United States and the European Union;
 the per-title evidence is recorded in [`samples/README.md`](samples/README.md).
 *The War of the Worlds* is the same test book used by the related
-[Kokoro PDF Audiobook](https://github.com/outspokende/kokoro-pdf-audiobook)
+[Kokoro PDF Audiobook](https://github.com/outspokenhardcore/kokoro-pdf-audiobook)
 project, so you can compare both pipelines on identical input.
 
 ```bash

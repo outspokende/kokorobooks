@@ -40,7 +40,7 @@ Listening times are estimates at roughly 165 words per minute. All five titles
 are English.
 
 *The War of the Worlds* is the same public-domain test book used by the related
-[Kokoro PDF Audiobook](https://github.com/outspokende/kokoro-pdf-audiobook)
+[Kokoro PDF Audiobook](https://github.com/outspokenhardcore/kokoro-pdf-audiobook)
 project, so output from both projects can be compared directly.
 
 ## Rights
