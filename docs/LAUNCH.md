@@ -114,12 +114,42 @@ The three the notes already answer, in the order they usually appear:
 3. *Is the content yours?* Public domain, documented per title in
    [`samples/README.md`](../samples/README.md).
 
-## Optional: CI instead of your Mac
+## Listing and submission from CI
 
-Draft pull request #1 adds a tag-driven TestFlight workflow that fetches its
-secrets from Infisical over Tailscale. The Tailscale variables are already set
-on the repository. Still missing: `APPLE_TEAM_ID`, `APP_STORE_CONNECT_KEY_ID`
-and `APP_STORE_CONNECT_ISSUER_ID` as repository variables, the three secrets
-in Infisical, and an `IOS_BUNDLE_ID` variable, because that workflow defaults
-to a different bundle identifier than the one registered here. Worth doing
-once releases become routine; not needed for the first one.
+The listing and the submission can also run in GitHub Actions, so the App Store
+Connect key never has to leave Infisical. The workflow is
+[`store-listing.yml`](../.github/workflows/store-listing.yml). It joins the
+Tailnet with GitHub's OIDC token, reads the key from the `shared-store` project
+in Infisical, and runs the same fastlane lanes as your Mac.
+
+```bash
+gh workflow run store-listing.yml -f action=check      # read-only: key and app OK?
+gh workflow run store-listing.yml -f action=metadata   # listing, notes, screenshots
+gh workflow run store-listing.yml -f action=submit     # App Review, main branch only
+```
+
+**One-time setup**
+
+| What | Where | Value |
+|---|---|---|
+| `APP_STORE_CONNECT_KEY_P8` | Infisical → `shared-store` → env `prod` | The shared key. Usually there already. |
+| `APP_STORE_CONNECT_KEY_ID` | Repository **variable** | Key ID of that key. Shown permanently in App Store Connect under *Users and Access → Integrations → Team Keys*. |
+| `APP_STORE_CONNECT_ISSUER_ID` | Repository **variable** | Issuer ID from the same page. |
+| `KB_REVIEW_PHONE` | Repository **secret** | A number the App Review team can call. |
+
+Already set: `IOS_BUNDLE_ID`, `APPLE_TEAM_ID`, the review contact name and
+email, `KB_COPYRIGHT`, and the Infisical and Tailscale variables.
+
+```bash
+gh variable set APP_STORE_CONNECT_KEY_ID -R outspokende/kokorobooks --body '<Key ID>'
+gh variable set APP_STORE_CONNECT_ISSUER_ID -R outspokende/kokorobooks --body '<Issuer ID>'
+gh secret set KB_REVIEW_PHONE -R outspokende/kokorobooks     # prompts, nothing is echoed
+```
+
+The job runs in the `production` environment because the Infisical identity
+trusts only `repo:outspokende/kokorobooks:environment:production`. A failed
+run says which of these is missing.
+
+The tag-driven TestFlight workflow in draft pull request #1 is a separate,
+optional step for later: it needs a distribution certificate and a provisioning
+profile in Infisical as well. The first build was uploaded from a Mac.

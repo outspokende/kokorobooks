@@ -5,6 +5,9 @@
 #   fastlane ios metadata                      # listing text + screenshots
 #   fastlane ios testflight                    # upload the exported build
 #   fastlane ios submit                        # send the build to App Review
+#   fastlane ios check                         # read-only: is the key valid, does the app exist?
+#
+# CI runs the same lanes: .github/workflows/store-listing.yml.
 #
 # Nothing personal lives in this repository: the bundle id, team, review
 # contact and API key all come from the environment.
@@ -16,11 +19,17 @@ SCREENSHOT_SOURCES = {
 }.freeze
 
 def api_key
+  content = ENV["APP_STORE_CONNECT_KEY_P8"]
+  # A secret store may hold the PEM with literal "\n" sequences or base64-encoded.
+  content = content.gsub("\\n", "\n") if content&.include?("\\n")
+  base64 = !content.nil? && !content.include?("BEGIN")
+
   app_store_connect_api_key(
     key_id: ENV.fetch("APP_STORE_CONNECT_KEY_ID"),
     issuer_id: ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
     key_filepath: ENV["APP_STORE_CONNECT_KEY_PATH"],
-    key_content: ENV["APP_STORE_CONNECT_KEY_P8"],
+    key_content: content,
+    is_key_content_base64: base64,
     in_house: false
   )
 end
@@ -57,6 +66,21 @@ def assemble_metadata
 end
 
 platform :ios do
+  desc "Read-only: prove the API key works and show the app and its latest builds"
+  lane :check do
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from(hash: api_key)
+    bundle_id = ENV.fetch("KB_IOS_BUNDLE_ID")
+    app = Spaceship::ConnectAPI::App.find(bundle_id)
+    UI.user_error!("No App Store Connect record for #{bundle_id}") unless app
+
+    UI.success("App: #{app.name} (#{bundle_id})")
+    builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 5)
+    UI.user_error!("The app exists but has no builds yet") if builds.empty?
+    builds.each do |b|
+      UI.message("  build #{b.version}  #{b.processing_state}  uploaded #{b.uploaded_date}")
+    end
+  end
+
   desc "Upload listing text and screenshots without touching the binary"
   lane :metadata do
     root = assemble_metadata
